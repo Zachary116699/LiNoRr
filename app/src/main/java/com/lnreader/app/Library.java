@@ -20,8 +20,17 @@ final class Library {
         if (bs != null) for (int i = 0; i < bs.length(); i++) if (bs.optJSONObject(i) != null) books.add(bs.optJSONObject(i));
         if (ss != null) for (int i = 0; i < ss.length(); i++) if (ss.optJSONObject(i) != null) shelves.add(ss.optJSONObject(i));
         if (shelves.isEmpty()) shelves.add(json("id", "default", "name", "未分类"));
-        if (state.optJSONObject("prefs") == null) set(state, "prefs", json("size", 20, "line", 1.9, "paragraph", .8, "bg", "#f7f3e8", "font", "系统默认"));
+        if (state.optJSONObject("prefs") == null) set(state, "prefs", defaultPrefs());
+        JSONObject prefs = prefs();
+        if (!prefs.has("readingMode")) {
+            // Migrate previous defaults while retaining explicitly customized spacing.
+            if (Math.abs(prefs.optDouble("line", 1.5) - 1.9) < .001) set(prefs, "line", 1.5);
+            if (Math.abs(prefs.optDouble("paragraph", .5) - .8) < .001) set(prefs, "paragraph", .5);
+            set(prefs, "readingMode", "paged");
+        }
+        if (!prefs.has("volumeKeys")) set(prefs, "volumeKeys", true);
     }
+    static JSONObject defaultPrefs() { return json("size", 20, "line", 1.5, "paragraph", .5, "bg", "#f7f3e8", "font", "系统默认", "readingMode", "paged", "volumeKeys", true); }
     synchronized void save() throws Exception {
         set(state, "version", 1); set(state, "books", new JSONArray(books)); set(state, "shelves", new JSONArray(shelves));
         atomic(new File(root, "library.json"), state.toString(2).getBytes(StandardCharsets.UTF_8));

@@ -22,7 +22,24 @@ public class BookParserTest {
         List<String> names = new ArrayList<>(Arrays.asList("10.txt", "2.txt", "1.txt")); names.sort(BookParser::naturalCompare);
         assert names.equals(Arrays.asList("1.txt", "2.txt", "10.txt"));
         verify(BookParser.decode(Files.readAllBytes(Path.of(args[0]))));
-        System.out.println("PASS: native Java chapter hierarchy, source offsets, bounded rendering, encodings, natural sort and xs_local_html fixture");
+        assert Pagination.starts(new int[]{0, 20, 40, 60}, new int[]{20, 40, 60, 80}, 40).equals(Arrays.asList(0, 2));
+        assert Pagination.starts(new int[]{0, 80, 100}, new int[]{80, 100, 120}, 40).equals(Arrays.asList(0, 1));
+        Random random = new Random(91);
+        for (int sample = 0; sample < 1000; sample++) {
+            int[] tops = new int[1 + random.nextInt(300)], bottoms = new int[tops.length]; int y = 0, height = 50 + random.nextInt(700);
+            for (int i = 0; i < tops.length; i++) { tops[i] = y; y += 1 + random.nextInt(150); bottoms[i] = y; }
+            List<Integer> pages = Pagination.starts(tops, bottoms, height);
+            assert pages.get(0) == 0;
+            int visited = 0;
+            for (int p = 0; p < pages.size(); p++) {
+                int start = pages.get(p), end = p + 1 < pages.size() ? pages.get(p + 1) : tops.length;
+                assert start == visited && end > start;
+                assert end == start + 1 || bottoms[end - 1] - tops[start] <= height;
+                visited = end;
+            }
+            assert visited == tops.length;
+        }
+        System.out.println("PASS: native parser, encodings, natural sort, xs_local_html and 1,000 pagination layouts without missing lines");
     }
     private static void verify(String source) {
         StringBuilder rebuilt = new StringBuilder();
