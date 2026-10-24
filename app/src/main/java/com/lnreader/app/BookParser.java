@@ -6,7 +6,7 @@ import java.util.regex.*;
 
 /** Only source headings enter the TOC; bounded rendering windows have no invented titles. */
 public final class BookParser {
-    public static final int VERSION = 5;
+    public static final int VERSION = 6;
     public static final class Chapter {
         public final String title; public final int start, level; public int end; public boolean heading = true;
         Chapter(String title, int start, int level) { this.title = title; this.start = start; this.level = level; }
@@ -16,6 +16,46 @@ public final class BookParser {
     private static final Pattern EN = Pattern.compile("^(volume|vol|book|part|chapter|chap|ch|episode|ep|section|sec|act|scene)\\s*\\.?\\s*(?:[0-9０-９]+|[ivxlcdm]+)(?=$|[\\s.．:：、\\-—)）\\p{IsHan}]).*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern EXTRA = Pattern.compile("^(?:序章|序言|序|楔子|引子|尾声|尾聲|终章|終章|结语|結語|后记|後記|番外(?:篇|章)?(?:\\s*" + N + ")?|prologue|epilogue|preface)(?:$|[\\s:：、.．\\-—].*)", Pattern.CASE_INSENSITIVE);
     private static final Pattern DECOR = Pattern.compile("^[=\\-*_#\\s【\\[（(]+|[=\\-*_#\\s】\\]）)]+$");
+    private static final Pattern LEGACY_EN = Pattern.compile("^(chapter|part|book|volume)\\s+(?:\\d+|[ivxlcdm]+)\\b.*$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern LEGACY_EXTRA = Pattern.compile("^(序章|序言|序|楔子|尾声|终章|结语|后记)(?:$|[\\s:：、.．-].*)");
+    public static final List<String> DEFAULT_KINDS = Arrays.asList("卷", "部", "篇", "章", "节", "目", "话", "回", "集", "Chapter", "Part", "Book", "Volume", "序言等");
+    public static final List<String> ALL_KINDS = Arrays.asList("卷", "部", "篇", "章", "节", "目", "话", "回", "集", "幕", "场", "折", "Chapter", "Part", "Book", "Volume", "EP.", "Episode", "Section", "Act", "Scene", "序言等");
+    public static final class Rule {
+        public final String name; public final int level; final Pattern pattern;
+        public Rule(String name, int level) {
+            this.name = name.trim(); this.level = level;
+            if (this.name.isEmpty() || this.name.length() > 30 || level < 1 || level > 5) throw new IllegalArgumentException("匹配名称为 1～30 字，层级为 1～5");
+            String literal = Pattern.quote(this.name);
+            pattern = Pattern.compile("^(?:第\\s*" + N + "\\s*" + literal + "|" + literal + "\\s*(?:" + N + "|[ivxlcdm]+))(?=$|[\\s:：.．、\\-—)）\\p{IsHan}]).*$", Pattern.CASE_INSENSITIVE);
+        }
+    }
+    public static final class Rules {
+        public final Set<String> kinds; public final List<Rule> custom;
+        public Rules(Collection<String> kinds, List<Rule> custom) { this.kinds = new LinkedHashSet<>(kinds); this.custom = custom; }
+        public static Rules defaults() { return new Rules(DEFAULT_KINDS, Collections.emptyList()); }
+        int level(String clean) {
+            Matcher cn = CN.matcher(clean), en = EN.matcher(clean);
+            // Defaults deliberately retain the older, narrower grammar.
+            if (cn.matches()) {
+                String kind = cn.group(1) == null ? cn.group(2) : cn.group(1); kind = kind.replace('節', '节').replace('話', '话').replace('場', '场');
+                if (kinds.contains(kind) && clean.startsWith("第")) return "卷部".contains(kind) ? 1 : kind.equals("篇") ? 2 : kind.equals("章") ? 3 : kind.equals("节") ? 4 : 5;
+            }
+            if (en.matches()) {
+                String kind = en.group(1).toLowerCase(Locale.ROOT), key = null;
+                if (Arrays.asList("chapter", "chap", "ch").contains(kind)) key = "Chapter";
+                else if (Arrays.asList("volume", "vol").contains(kind)) key = "Volume";
+                else if (kind.equals("ep")) key = "EP.";
+                else if (Arrays.asList("section", "sec").contains(kind)) key = "Section";
+                else for (String candidate : ALL_KINDS) if (candidate.equalsIgnoreCase(kind)) key = candidate;
+                boolean old = Arrays.asList("chapter", "part", "book", "volume").contains(kind);
+                boolean grammar = !old || LEGACY_EN.matcher(clean).matches();
+                if (key != null && kinds.contains(key) && grammar && (!Arrays.asList("chap", "ch", "vol", "sec").contains(kind))) return Arrays.asList("Volume", "Book", "Part", "Act").contains(key) ? 1 : Arrays.asList("Section", "Scene").contains(key) ? 4 : 3;
+            }
+            if (kinds.contains("序言等") && LEGACY_EXTRA.matcher(clean).matches()) return 3;
+            for (Rule rule : custom) if (rule.pattern.matcher(clean).matches()) return rule.level;
+            return -1;
+        }
+    }
     public static String decode(byte[] bytes) throws CharacterCodingException {
         String value;
         if (bytes.length >= 2 && (bytes[0] & 255) == 255 && (bytes[1] & 255) == 254) value = new String(bytes, 2, bytes.length - 2, StandardCharsets.UTF_16LE);
@@ -24,17 +64,15 @@ public final class BookParser {
             catch (CharacterCodingException e) { value = Charset.forName("GB18030").newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString(); } }
         return value.replaceFirst("^\\uFEFF", "").replace("\r\n", "\n").replace('\r', '\n');
     }
-    public static List<Chapter> parse(String text) {
+    public static List<Chapter> parse(String text) { return parse(text, Rules.defaults()); }
+    public static List<Chapter> parse(String text, Rules rules) {
         List<Chapter> headings = new ArrayList<>();
         for (int cursor = 0; cursor < text.length();) {
             int end = text.indexOf('\n', cursor); if (end < 0) end = text.length(); int left = cursor, right = end;
             while (left < right && Character.isWhitespace(text.charAt(left))) left++;
             while (right > left && Character.isWhitespace(text.charAt(right - 1))) right--;
-            if (right > left && right - left <= 120 && "第卷部篇章节節目话話回集幕场場折序楔引尾终終结結后後番vVbBpPcCeEsSaA#【[=(—-*".indexOf(text.charAt(left)) >= 0) {
-                String original = text.substring(left, right), clean = DECOR.matcher(original).replaceAll(""); Matcher cn = CN.matcher(clean), en = EN.matcher(clean); int level = -1;
-                if (cn.matches()) { String kind = cn.group(1) == null ? cn.group(2) : cn.group(1); level = "卷部".contains(kind) ? 1 : kind.equals("篇") ? 2 : kind.equals("章") ? 3 : "节節".contains(kind) ? 4 : 3; }
-                else if (en.matches()) { String kind = en.group(1).toLowerCase(Locale.ROOT); level = Arrays.asList("volume", "vol", "book", "part", "act").contains(kind) ? 1 : Arrays.asList("section", "sec", "scene").contains(kind) ? 4 : 3; }
-                else if (EXTRA.matcher(clean).matches()) level = 3;
+            if (right > left && right - left <= 90 && (!rules.custom.isEmpty() || "第卷部篇章节節目话話回集幕场場折序楔引尾终終结結后後番vVbBpPcCeEsSaA#【[=(—-*".indexOf(text.charAt(left)) >= 0)) {
+                String original = text.substring(left, right), clean = DECOR.matcher(original).replaceAll(""); int level = rules.level(clean);
                 if (level >= 0) headings.add(new Chapter(original, cursor, level));
             }
             cursor = end + 1;

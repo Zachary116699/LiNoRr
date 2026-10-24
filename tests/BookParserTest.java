@@ -5,7 +5,7 @@ import java.util.*;
 
 public class BookParserTest {
     public static void main(String[] args) throws Exception {
-        String source = "引子\n第一卷 风起\n第一章 初见\n正文\n第二节 远行\nChapter 2 Return\n尾声\n终";
+        String source = "序言\n第一卷 风起\n第一章 初见\n正文\n第二节 远行\nChapter 2 Return\n尾声\n终";
         List<BookParser.Chapter> chapters = BookParser.parse(source);
         assert chapters.size() == 6;
         assert chapters.get(1).level == 1;
@@ -21,19 +21,29 @@ public class BookParserTest {
         assert paths.visible(paths.collapsedOutsidePath(2), "").equals(Arrays.asList(0, 1, 2, 3, 5));
         assert paths.collapsedOutsidePath(0).contains(0); // Current branch itself stays collapsed.
         assert paths.collapsedOutsidePath(-1).equals(Set.of(0, 1, 3, 5, 6));
-        for (String title : Arrays.asList("EP.1 开始", "EP. 002：继续", "ep3 - Return", "Episode 4: Arrival", "Chapter 5 Test", "CH.6 标题", "Chap. 7", "Section 8 标题", "Sec.9", "Part II", "Volume III", "Book 2", "Act IV", "Scene 3", "第一目 测试", "第２節 继续", "卷一 风起", "【EP.10 标题】")) {
-            List<BookParser.Chapter> recognized = BookParser.parse(title + "\n普通正文。\n"); assert recognized.size() == 1 : title; assert recognized.get(0).title.equals(title) : title;
+        BookParser.Rules extended = new BookParser.Rules(BookParser.ALL_KINDS, Collections.emptyList());
+        for (String title : Arrays.asList("EP.1 开始", "EP. 002：继续", "ep3 - Return", "Episode 4: Arrival", "Chapter 5 Test", "Section 8 标题", "Part II", "Volume III", "Book 2", "Act IV", "Scene 3", "第一目 测试", "第２節 继续", "【EP.10 标题】", "第一幕 旧事")) {
+            List<BookParser.Chapter> recognized = BookParser.parse(title + "\n普通正文。\n", extended); assert recognized.size() == 1 : title; assert recognized.get(0).title.equals(title) : title;
         }
+        assert BookParser.parse("第一幕 不应进入默认目录\nEP.1 也不默认识别\n引子\n番外\n").isEmpty();
+        BookParser.Rules personal = new BookParser.Rules(List.of("卷"), List.of(new BookParser.Rule("季", 2), new BookParser.Rule("EP.", 4)));
+        List<BookParser.Chapter> personalToc = BookParser.parse("第一卷 甲\n第1季 乙\nEP.1 丙\n第一章 被取消\n", personal);
+        assert personalToc.size() == 3 && personalToc.get(1).level == 2 && personalToc.get(2).level == 4;
         assert BookParser.parse("没有目录的小说。\n普通正文。\n").isEmpty();
         assert BookParser.parse("EP 只是正文中的缩写\nchapterhouse is a word\n").isEmpty();
         String longEpisode = "EP.1 原始标题\n" + "原文内容。\n".repeat(20000);
-        assert BookParser.parse(longEpisode).size() == 1;
-        assert BookParser.sections(longEpisode, BookParser.parse(longEpisode)).stream().noneMatch(c -> c.title.contains("续"));
+        assert BookParser.parse(longEpisode, extended).size() == 1;
+        assert BookParser.sections(longEpisode, BookParser.parse(longEpisode, extended)).stream().noneMatch(c -> c.title.contains("续"));
         String spaced = "\n\nEP.1 标题\n\n\n正文甲\n　　已有缩进\n\n正文乙\n";
         DisplayText display = new DisplayText(spaced, 0, spaced.length());
         assert display.text.equals("EP.1 标题\n正文甲\n　　已有缩进\n正文乙\n");
         for (int i = 0; i < display.text.length(); i++) { assert display.text.charAt(i) == spaced.charAt(display.sourceOffset(i)); assert display.displayOffset(display.sourceOffset(i)) == i; }
         assert spaced.startsWith("\n\n") && spaced.contains("\n\n\n");
+        DisplayText indented = new DisplayText(spaced, 0, spaced.length(), true, true);
+        assert indented.text.equals("EP.1 标题\n　　正文甲\n　　已有缩进\n　　正文乙\n");
+        int paragraph = spaced.indexOf("正文甲"); assert indented.sourceOffset(indented.displayOffset(paragraph)) == paragraph;
+        assert !new DisplayText("一段尚未结束", 2, 6, true, false).text.startsWith("　　");
+        for (int i = 0; i < 10000; i++) { int color = BookIdentity.coverColor(Integer.toHexString(i)); int r = color >> 16 & 255, g = color >> 8 & 255, b = color & 255; assert Math.min(r, Math.min(g,b)) > 150; assert Math.max(r, Math.max(g,b)) - Math.min(r, Math.min(g,b)) <= 28; }
         Path temporary = Files.createTempDirectory("lnreader-backup-test");
         try { byte[] original = {(byte) 0xff, (byte) 0xfe, 0x2d, 0x4e, 13, 0, 10, 0}; Path from = temporary.resolve("源.txt"), to = temporary.resolve("book/无分类/原名.txt"); Files.write(from, original); BackupFiles.copy(from.toFile(), to.toFile()); assert Arrays.equals(original, Files.readAllBytes(to)); assert BackupFiles.name("../a:b/c").equals(".._a_b_c"); boolean denied = false; try { BackupFiles.child(temporary.toFile(), "../outside"); } catch (java.io.IOException e) { denied = true; } assert denied; }
         finally { try (var files = Files.walk(temporary)) { files.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} }); } }
@@ -48,7 +58,8 @@ public class BookParserTest {
         verify("\n\n第一章 开始\n正文");
         List<String> names = new ArrayList<>(Arrays.asList("10.txt", "2.txt", "1.txt")); names.sort(BookParser::naturalCompare);
         assert names.equals(Arrays.asList("1.txt", "2.txt", "10.txt"));
-        verify(BookParser.decode(Files.readAllBytes(Path.of(args[0]))));
+        String gu = BookParser.decode(Files.readAllBytes(Path.of(args[0]))); verify(gu);
+        System.out.println("Default Gu TOC: " + BookParser.parse(gu).size());
         assert Pagination.starts(new int[]{0, 20, 40, 60}, new int[]{20, 40, 60, 80}, 40).equals(Arrays.asList(0, 2));
         assert Pagination.starts(new int[]{0, 80, 100}, new int[]{80, 100, 120}, 40).equals(Arrays.asList(0, 1));
         Random random = new Random(91);

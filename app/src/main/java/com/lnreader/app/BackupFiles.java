@@ -14,4 +14,17 @@ final class BackupFiles {
     static void copy(File from, File to) throws IOException { mkdir(to.getParentFile()); File temp = new File(to.getParentFile(), ".copy-" + java.util.UUID.randomUUID()); try { Files.copy(from.toPath(), temp.toPath(), StandardCopyOption.REPLACE_EXISTING); Files.move(temp.toPath(), to.toPath(), StandardCopyOption.REPLACE_EXISTING); } finally { temp.delete(); } }
     static void write(File file, byte[] bytes) throws IOException { mkdir(file.getParentFile()); File temp = new File(file.getParentFile(), ".write-" + java.util.UUID.randomUUID()); try { try (FileOutputStream output = new FileOutputStream(temp)) { output.write(bytes); output.getFD().sync(); } Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING); } finally { temp.delete(); } }
     static File available(File parent, String requested) { String safe = name(requested); File file = new File(parent, safe); int i = 2; while (file.exists()) file = new File(parent, limit(safe, 230) + " (" + i++ + ")"); return file; }
+    static void deleteTree(File directory) throws IOException {
+        if (!Files.exists(directory.toPath(), LinkOption.NOFOLLOW_LINKS)) return;
+        Files.walkFileTree(directory.toPath(), new SimpleFileVisitor<Path>() {
+            @Override public FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException { Files.delete(file); return FileVisitResult.CONTINUE; }
+            @Override public FileVisitResult postVisitDirectory(Path dir, IOException error) throws IOException { if (error != null) throw error; Files.delete(dir); return FileVisitResult.CONTINUE; }
+        });
+    }
+    static void copyTree(File from, File to) throws IOException {
+        Files.walkFileTree(from.toPath(), new SimpleFileVisitor<Path>() {
+            @Override public FileVisitResult preVisitDirectory(Path dir, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException { mkdir(to.toPath().resolve(from.toPath().relativize(dir)).toFile()); return FileVisitResult.CONTINUE; }
+            @Override public FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException { if (attrs.isSymbolicLink()) throw new IOException("备份内含符号链接，请先移除链接"); copy(file.toFile(), to.toPath().resolve(from.toPath().relativize(file)).toFile()); return FileVisitResult.CONTINUE; }
+        });
+    }
 }
