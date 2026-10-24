@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f6f2">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'">
+  <title>LNReader · 留一点时间给阅读</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg"><defs>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M3 4c4-1 6 0 9 2 3-2 5-3 9-2v15c-4-1-6 0-9 2-3-2-5-3-9-2zM12 6v15"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="7" rx="1"/><rect x="14" y="4" width="6" height="10" rx="1"/><rect x="4" y="15" width="6" height="5" rx="1"/><path d="M14 18h6"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m14 5-7 7 7 7"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5h7l2 3h9v12H3z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 1v2M12 21v2M1 12h2M21 12h2M4 4l2 2M18 18l2 2M4 20l2-2M18 6l2-2"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-mark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4z"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M20 8a8 8 0 0 0-14-3L3 8m0-5v5h5M4 16a8 8 0 0 0 14 3l3-3m0 5v-5h-5"/></symbol>
+  </defs></svg>
+
+  <main id="shelfView" class="shell">
+    <header class="brand-row"><a class="brand" href="#" aria-label="LNReader 书架"><svg><use href="#i-book"/></svg><span>LNReader</span></a><span class="local-badge"><i></i> 离线 · 本地阅读</span></header>
+    <section class="shelf-heading"><div><span class="eyebrow">YOUR LITTLE LIBRARY</span><h1>我的书架<span class="title-dot">.</span></h1><p>把世界调成静音，读自己的故事。</p></div><button id="importBtn" class="primary"><svg><use href="#i-plus"/></svg>导入书籍</button></section>
+    <section id="continueCard" class="continue-card" hidden></section>
+    <div class="shelf-tabs-row"><nav id="tabs" aria-label="书架分类"></nav><button id="addShelf" class="icon-button" aria-label="新建书架"><svg><use href="#i-plus"/></svg></button><button id="manageShelf" class="icon-button" aria-label="管理当前书架"><svg><use href="#i-more"/></svg></button></div>
+    <div class="library-tools"><label class="search"><svg><use href="#i-search"/></svg><input id="search" type="search" placeholder="搜索书名或正文…" aria-label="搜索书名或正文"></label><span id="bookCount" class="muted"></span><div class="view-toggle" aria-label="显示方式"><button id="gridView" class="icon-button selected" aria-label="瀑布流显示"><svg><use href="#i-grid"/></svg></button><button id="listView" class="icon-button" aria-label="列表显示"><svg><use href="#i-list"/></svg></button></div></div>
+    <section id="books" class="books" aria-live="polite"></section>
+    <div id="empty" class="empty" hidden><div class="empty-books"><span>阅</span><span>读</span><span>之间</span></div><h2>故事，从这里开始</h2><p>导入一本 TXT，把喜欢的文字随身带走。<br>不联网，不打扰，只有你和书。</p><button id="emptyImport" class="primary">导入第一本书 <span>↗</span></button><button id="tryDemo" class="text-button">先读一段，感受一下</button></div>
+    <footer class="shelf-footer"><span>一方书架，万千世界。</span><button id="syncFolder" class="text-button"><svg><use href="#i-sync"/></svg>同步本地文件夹</button></footer>
+  </main>
+
+  <section id="readerView" class="reader-view" hidden>
+    <header class="reader-header"><button id="backShelf" class="icon-button" aria-label="返回书架"><svg><use href="#i-back"/></svg></button><div><span id="readerBook"></span><small id="readerChapter"></small></div><button id="bookmarkBtn" class="icon-button bookmark" aria-label="添加书签"><svg><use href="#i-mark"/></svg></button></header>
+    <div id="readingScroll" tabindex="0"><article id="readingContent"></article><div class="chapter-navigation"><button id="prevChapter" class="text-button">← 上一章</button><button id="nextChapter" class="text-button">下一章 →</button></div></div>
+    <footer class="reader-footer"><div class="reading-position"><span id="positionLabel"></span><span id="readPercent"></span></div><input id="bookProgress" type="range" min="0" max="1000" aria-label="全书阅读进度"><div class="reader-actions"><button id="catalogBtn"><svg><use href="#i-list"/></svg><span>目录</span></button><button id="marksBtn"><svg><use href="#i-mark"/></svg><span>书签</span></button><button id="nightBtn"><svg><use href="#i-moon"/></svg><span>夜间</span></button><button id="settingsBtn"><span class="aa">Aa</span><span>阅读设置</span></button></div></footer>
+  </section>
+
+  <dialog id="importDialog"><form method="dialog" class="sheet"><div class="sheet-heading"><div><span class="eyebrow">MAKE ROOM FOR STORIES</span><h2>把好书放进来</h2></div><button class="icon-button" aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><p class="muted">支持 UTF-8、GB18030、UTF-16，本地处理。</p><fieldset class="import-options"><legend>如何整理这次导入？</legend><label><input type="radio" name="grouping" value="separate" checked><span><b>每个 TXT 识别为一本书</b><small>适合批量导入不同的书</small></span></label><label><input type="radio" name="grouping" value="merged"><span><b>合并识别为一整本书</b><small>文件按名称自然排序，适合分卷小说</small></span></label></fieldset><label class="field-label">导入到书架<select id="importShelf"></select></label><div class="import-buttons"><button id="pickFiles" type="button" class="import-choice"><svg><use href="#i-book"/></svg><b>选择 TXT 文件</b><small>支持多选，可同时选封面图片</small></button><button id="pickFolder" type="button" class="import-choice"><svg><use href="#i-folder"/></svg><b>选择文件夹</b><small>包含子目录，自动匹配封面</small></button></div><p class="note">建议目录：Download/LNReader。文件夹导入可识别同名图片、cover、folder 或“封面”。单独选 TXT 无法读取未授权的相邻图片，请同时选择图片或改用文件夹导入。</p></form></dialog>
+  <dialog id="catalogDialog" class="tall-dialog"><div class="sheet"><div class="sheet-heading"><h2>目录 <small id="chapterCount"></small></h2><button data-close class="icon-button" aria-label="关闭目录"><svg><use href="#i-close"/></svg></button></div><label class="search"><svg><use href="#i-search"/></svg><input id="chapterSearch" placeholder="搜索章节" type="search"></label><div id="chapterList" class="chapter-list"></div></div></dialog>
+  <dialog id="settingsDialog"><div class="sheet">
+    <div class="sheet-heading"><h2>阅读设置</h2><button data-close class="icon-button" aria-label="关闭阅读设置"><svg><use href="#i-close"/></svg></button></div>
+    <div class="theme-options"><button data-theme="paper" style="background:#f7f3e8;color:#3e443a">纸白</button><button data-theme="green" style="background:#e5ebdf;color:#3e443a">青竹</button><button data-theme="night" style="background:#20231f;color:#dddcd3">夜读</button><label class="custom-color">自定义<input id="bgColor" type="color" aria-label="自定义背景颜色"></label></div>
+    <div class="rgb-fields"><label>R <input id="rgb-red" type="number" min="0" max="255" aria-label="背景红色分量"></label><label>G <input id="rgb-green" type="number" min="0" max="255" aria-label="背景绿色分量"></label><label>B <input id="rgb-blue" type="number" min="0" max="255" aria-label="背景蓝色分量"></label></div>
+    <label class="setting-row">字体<select id="fontFamily"><option value="system-ui">系统默认</option><option value="serif">系统衬线</option><option value="sans-serif">系统无衬线</option><option value="monospace">等宽字体</option></select></label><button id="pickFont" class="text-button">＋ 导入本地 TTF / OTF 字体</button>
+    <label class="setting-row">字号 <output id="fontSizeValue"></output><input id="fontSize" type="range" min="14" max="36" step="1"></label><label class="setting-row">行间距 <output id="lineHeightValue"></output><input id="lineHeight" type="range" min="1.2" max="2.8" step="0.1"></label><label class="setting-row">段间距 <output id="paragraphValue"></output><input id="paragraph" type="range" min="0" max="2.5" step="0.1"></label><button id="resetSettings" class="text-button">恢复默认设置</button>
+  </div></dialog>
+  <dialog id="bookDialog"><div class="sheet"><div class="sheet-heading"><h2 id="editBookTitle">书籍管理</h2><button data-close class="icon-button" aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><label class="field-label">书名<input id="editTitle" maxlength="120"></label><label class="field-label">所在书架<select id="editShelf"></select></label><button id="saveBook" class="primary wide">保存</button><button id="deleteBook" class="text-button danger">从书架移除</button><p class="note">只移除应用中的副本，不删除原始 TXT 文件。</p></div></dialog>
+  <dialog id="shelfDialog"><form id="shelfForm" class="sheet"><div class="sheet-heading"><h2 id="shelfDialogTitle">新建书架</h2><button type="button" data-close class="icon-button" aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><label class="field-label">书架名称<input id="shelfName" required maxlength="20" placeholder="比如：枕边常读"></label><button class="primary wide" type="submit">保存书架</button><button id="deleteShelf" type="button" class="text-button danger" hidden>删除书架（书籍移至未分类）</button></form></dialog>
+  <dialog id="marksDialog"><div class="sheet"><div class="sheet-heading"><h2>我的书签</h2><button data-close class="icon-button" aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><div id="marksList"></div></div></dialog>
+  <dialog id="confirmDialog"><div class="sheet"><h2>移除这本书？</h2><p>阅读进度和书签会一并移除，原始文件保留。</p><div class="confirm-actions"><button data-close class="text-button">取消</button><button id="confirmDelete" class="primary">确认移除</button></div></div></dialog>
+  <div id="toast" role="status" hidden></div><div id="busy" role="status" hidden><div class="spinner"></div><span id="busyText">正在整理书籍…</span></div>
+  <input id="fileInput" type="file" accept=".txt,.png,.jpg,.jpeg,.webp" multiple hidden><input id="folderInput" type="file" webkitdirectory multiple hidden><input id="fontInput" type="file" accept=".ttf,.otf" hidden>
+  <script type="module" src="app.js"></script>
+</body></html>
