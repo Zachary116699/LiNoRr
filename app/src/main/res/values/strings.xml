@@ -1,7 +1,10 @@
 <resources>
     <string name="reading_position">%1$d / %2$d 章　·　已读 %3$d%%</string>
     <string name="reading_page_position">%1$d / %2$d 章　%3$d / %4$d 页　%5$d%%</string>
-    <string name="setting_value">%1$s　%2$.1f</string>
+    <string name="device_status">%1$s　电量 %2$s</string>
+    <string name="quiet_progress">%1$s 页 · %2$d%%</string>
+    <string name="background_choice">%1$s ▾</string>
+    <string name="selected_choice">%1$s%2$s</string>
     <string name="import_separate">每个 TXT 识别为一本书</string>
     <string name="import_merged">合并识别为一整本书（按文件名排序）</string>
     <string name="organizing">正在整理 · %1$s</string>

@@ -29,8 +29,16 @@ final class Library {
             set(prefs, "readingMode", "paged");
         }
         if (!prefs.has("volumeKeys")) set(prefs, "volumeKeys", true);
+        migrateDefaults(prefs);
     }
-    static JSONObject defaultPrefs() { return json("size", 20, "line", 1.5, "paragraph", .5, "bg", "#f7f3e8", "font", "系统默认", "readingMode", "paged", "volumeKeys", true); }
+    static void migrateDefaults(JSONObject prefs) {
+        if (prefs.optInt("defaultsVersion") >= 2) return;
+        if (Math.abs(prefs.optDouble("size", 20) - 20) < .001) set(prefs, "size", 18);
+        if (Math.abs(prefs.optDouble("line", 1.5) - 1.5) < .001) set(prefs, "line", 1.4);
+        if (Math.abs(prefs.optDouble("paragraph", .5) - .5) < .001) set(prefs, "paragraph", .4);
+        set(prefs, "defaultsVersion", 2);
+    }
+    static JSONObject defaultPrefs() { return json("size", 18, "line", 1.4, "paragraph", .4, "bg", "#f7f3e8", "font", "系统默认", "readingMode", "paged", "volumeKeys", true, "defaultsVersion", 2); }
     synchronized void save() throws Exception {
         set(state, "version", 1); set(state, "books", new JSONArray(books)); set(state, "shelves", new JSONArray(shelves));
         atomic(new File(root, "library.json"), state.toString(2).getBytes(StandardCharsets.UTF_8));

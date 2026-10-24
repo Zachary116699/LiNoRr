@@ -13,7 +13,7 @@ import java.util.*;
 
 /** Native, line-aligned pages of a bounded chapter, independent of menu visibility. */
 final class PagedReaderView extends View {
-    interface Listener { void positionChanged(int offset, int page, int pageCount); void turn(int direction); }
+    interface Listener { void positionChanged(int offset, int page, int pageCount); void turn(int direction); default void layoutChanged() {} }
     private final TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
     private CharSequence text = "";
     private StaticLayout layout;
@@ -35,9 +35,25 @@ final class PagedReaderView extends View {
         paint.setTextSize(size * getResources().getDisplayMetrics().scaledDensity);
         paint.setTypeface(font); paint.setColor(ink); setBackgroundColor(background); this.leading = leading;
     }
+    void colors(int ink, int background) { paint.setColor(ink); setBackgroundColor(background); invalidate(); }
+    PageCounter counter() {
+        return new PageCounter(new TextPaint(paint), getWidth() - getPaddingLeft() - getPaddingRight(), getHeight() - getPaddingTop() - getPaddingBottom(), leading);
+    }
+    static final class PageCounter {
+        private final TextPaint paint;
+        private final int width, height;
+        private final float leading;
+        PageCounter(TextPaint paint, int width, int height, float leading) { this.paint = paint; this.width = width; this.height = height; this.leading = leading; }
+        int count(CharSequence text) {
+            StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), paint, Math.max(1, width)).setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(0, leading).setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE).build();
+            int n = layout.getLineCount(); int[] tops = new int[n], bottoms = new int[n];
+            for (int i = 0; i < n; i++) { tops[i] = layout.getLineTop(i); bottoms[i] = layout.getLineBottom(i); }
+            return Pagination.starts(tops, bottoms, Math.max(1, height)).size();
+        }
+    }
     void content(CharSequence value, int offset) { text = value; desiredOffset = Math.max(0, Math.min(value.length(), offset)); relayout(); }
     int offset() { return layout == null || starts.isEmpty() ? desiredOffset : layout.getLineStart(starts.get(page)); }
-    @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { desiredOffset = offset(); relayout(); }
+    @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { desiredOffset = offset(); relayout(); listener.layoutChanged(); }
     private void relayout() {
         int width = getWidth() - getPaddingLeft() - getPaddingRight();
         int height = getHeight() - getPaddingTop() - getPaddingBottom();

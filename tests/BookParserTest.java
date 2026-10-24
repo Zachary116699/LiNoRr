@@ -10,6 +10,12 @@ public class BookParserTest {
         assert chapters.size() == 6;
         assert chapters.get(1).level == 1;
         assert chapters.get(3).level == 4;
+        ChapterTree tree = new ChapterTree(chapters);
+        assert tree.parent[1] == -1 && tree.parent[2] == 1 && tree.parent[3] == 2;
+        assert tree.branch[1] && tree.branch[2] && !tree.branch[3];
+        assert tree.visible(Set.of(1), "").equals(Arrays.asList(0, 1));
+        assert tree.visible(Set.of(1), "远行").equals(Arrays.asList(1, 2, 3));
+        assert tree.visible(Set.of(), "").size() == chapters.size();
         verify(source);
         verify("第一章 大章节\n" + "字".repeat(100000));
         verify("字".repeat(100000));

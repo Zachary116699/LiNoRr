@@ -21,7 +21,7 @@ async function nodes() {
 }
 async function tap(text, exact = true) {
   for (let i = 0; i < 8; i++) {
-    const node = (await nodes()).find(n => exact ? n.text === text : n.text?.includes(text));
+    const node = (await nodes()).find(n => exact ? n.text === text || n['content-desc'] === text : n.text?.includes(text) || n['content-desc']?.includes(text));
     if (node) {
       const nums = node.bounds.match(/\d+/g).map(Number);
       adb('shell', 'input', 'tap', String(Math.round((nums[0] + nums[2]) / 2)), String(Math.round((nums[1] + nums[3]) / 2)));
@@ -60,15 +60,15 @@ const empty = await nodes();
 assert.ok(empty.some(n => n.text === 'LNReader'));
 assert.ok(empty.some(n => n.text.startsWith('最近阅读')) && empty.some(n => n.text.startsWith('全部')));
 assert.ok(!empty.some(n => /离线|本地阅读|调成静音|文字之间|未分类/.test(n.text)));
-screenshot('android-0.9.1-empty.png');
+screenshot('android-0.9.2-empty.png');
 const fresh = await homeAndState();
-assert.equal(fresh.prefs.size, 20); assert.equal(fresh.prefs.line, 1.5); assert.equal(fresh.prefs.paragraph, .5);
+assert.equal(fresh.prefs.size, 18); assert.equal(fresh.prefs.line, 1.4); assert.equal(fresh.prefs.paragraph, .4);
 assert.equal(fresh.prefs.readingMode, 'paged'); assert.equal(fresh.prefs.volumeKeys, true);
 
 // Legacy 0.9 metadata also verifies the spacing migration without resetting books.
 adb('shell', 'am', 'force-stop', 'com.lnreader.app');
 const sample = '第一章 开始\n\n' + Array.from({ length: 36 }, (_, i) => `段落${String(i).padStart(3, '0')}。午后的风轻轻吹过书页。阅读从这一行继续，下一页应接着上一页，没有遗漏的文字。BodyOnlyNeedle\n\n`).join('')
-  + '第二章 继续\n\n' + Array.from({ length: 18 }, (_, i) => `第二章段落${i}，测试章节衔接和阅读设置。\n\n`).join('');
+  + '第二章 继续\n\n' + Array.from({ length: 18 }, (_, i) => `继续段落${i}，测试章节衔接和阅读设置。\n\n`).join('');
 const books = ['Alpha', 'Beta', 'Gamma'].map((title, i) => ({ id: (i + 1).toString().repeat(24), title, shelf: 'default', length: sample.length, position: 0, marks: [], chapterCount: 2, added: i + 1, lastRead: i === 2 ? 0 : (i + 1) * 100 }));
 for (const book of books) writeNative(book.id + '.txt', sample);
 writeNative('library.json', JSON.stringify({ version: 1, books, shelves: [{ id: 'default', name: '未分类' }], prefs: { size: 20, line: 1.9, paragraph: .8, bg: '#f7f3e8', font: '系统默认' } }));
@@ -86,9 +86,21 @@ adb('shell', 'input', 'text', 'BodyOnlyNeedle'); await pause(300); adb('shell', 
 assert.ok(await contains('未找到书籍'));
 adb('shell', 'am', 'force-stop', 'com.lnreader.app'); await launch();
 await tap('Beta');
+if (await contains('Got it')) await tap('Got it');
 const firstPage = await pageDescription();
+const firstQuietProgress = (await nodes()).find(n => /^\d+\/\d+ 页/.test(n.text))?.text;
+assert.ok((await nodes()).some(n => /\d+\/\d+ 页 · \d+%/.test(n.text)), 'Immersive page count and percentage');
+assert.ok((await nodes()).some(n => /\d+:\d+.*电量/.test(n.text)), 'Live clock and battery');
+assert.ok((await nodes()).some(n => n['content-desc'] === '返回书架'));
+function systemBarFlags() {
+  const windows = adb('shell', 'dumpsys', 'window', 'windows').toString().split(/  Window #/);
+  const app = windows.find(w => w.includes('ty=BASE_APPLICATION') && w.includes('package=com.lnreader.app'));
+  assert.ok(app); return app.match(/vsysui=([^\n]+)/)[1].trim().split(/\s+/);
+}
+assert.ok(systemBarFlags().includes('FULLSCREEN') && systemBarFlags().includes('HIDE_NAVIGATION'));
 assert.ok(!(await contains('目录')));
 await zone(.5); assert.ok(await contains('目录')); assert.equal(await pageDescription(), firstPage);
+assert.ok(!systemBarFlags().includes('FULLSCREEN') && !systemBarFlags().includes('HIDE_NAVIGATION'));
 await zone(.5); assert.ok(!(await contains('目录'))); assert.equal(await pageDescription(), firstPage);
 await zone(.88); const secondPage = await pageDescription(); assert.notEqual(secondPage, firstPage);
 await zone(.12); assert.equal(await pageDescription(), firstPage);
@@ -96,11 +108,15 @@ adb('shell', 'input', 'swipe', String(Math.round(size[0] * .85)), String(Math.ro
 await pause(250); assert.equal(await pageDescription(), secondPage);
 adb('shell', 'input', 'keyevent', '24'); await pause(250); assert.equal(await pageDescription(), firstPage);
 adb('shell', 'input', 'keyevent', '25'); await pause(250); assert.equal(await pageDescription(), secondPage);
-screenshot('android-0.9.1-reader.png');
+screenshot('android-0.9.2-reader.png');
 console.log('PASS: horizontal paging, left/right tap zones, middle menu toggle, volume paging and stable page content');
-await zone(.5); await tap('＋书签'); await tap('目录');
+await zone(.5); await tap('下一章'); assert.ok((await pageDescription()).includes('第二章 继续'));
+await tap('上一章'); assert.equal(await pageDescription(), firstPage);
+await tap('＋书签'); await tap('目录');
 await tap('第二章 继续', false);
 const nextChapter = await pageDescription();
+assert.ok(firstQuietProgress);
+assert.equal(Number(firstQuietProgress.match(/\/(\d+)/)[1]), Number(firstPage.match(/\/(\d+)页/)[1]) + Number(nextChapter.match(/\/(\d+)页/)[1]), 'Whole-book page count uses the exact reader geometry');
 assert.ok(nextChapter.includes('第二章 继续'));
 adb('shell', 'input', 'keyevent', '24'); await pause(250);
 assert.ok(!(await pageDescription()).includes('第二章 继续'));
@@ -114,8 +130,10 @@ const dialogBounds = dialogRoot.bounds.match(/\d+/g).map(Number);
 assert.ok(dialogBounds[0] > 0 && dialogBounds[2] < size[0], 'Floating dialog keeps side margins');
 assert.ok(dialogNodes.some(n => n.text === '音量键翻页'));
 await tap('左右翻页'); await tap('滚动翻页');
-await tap('音量键翻页');
-screenshot('android-0.9.1-settings.png');
+const volumeSwitch = (await nodes()).find(n => n.class === 'android.widget.Switch');
+const switchBounds = volumeSwitch.bounds.match(/\d+/g).map(Number);
+adb('shell', 'input', 'tap', String((switchBounds[0] + switchBounds[2]) >> 1), String((switchBounds[1] + switchBounds[3]) >> 1));
+screenshot('android-0.9.2-settings.png');
 adb('shell', 'input', 'keyevent', '4'); await pause(300);
 assert.ok(!(await nodes()).some(n => n.class?.endsWith('PagedReaderView')));
 await zone(.5);
@@ -133,9 +151,50 @@ await tap('Beta');
 assert.ok(!(await nodes()).some(n => n.class?.endsWith('PagedReaderView')));
 await zone(.5); await tap('书架');
 const saved = nativeState(); assert.equal(saved.books.find(b => b.title === 'Beta').marks.length, 1);
-assert.equal(saved.prefs.size, 20); assert.equal(saved.prefs.line, 1.5); assert.equal(saved.prefs.paragraph, .5);
+assert.equal(saved.prefs.size, 18); assert.equal(saved.prefs.line, 1.4); assert.equal(saved.prefs.paragraph, .4);
 assert.equal(saved.prefs.readingMode, 'scroll'); assert.equal(saved.prefs.volumeKeys, false);
-screenshot('android-0.9.1-shelf.png');
+screenshot('android-0.9.2-shelf.png');
+// Hierarchy and the expandable, live native RGB picker.
+adb('shell', 'am', 'force-stop', 'com.lnreader.app');
+const hierarchical = '第一卷 风起\n卷的正文。\n第一章 初见\n章的正文。\n第一节 远行\n' + '节的正文，测试阅读。\n'.repeat(60) + '第二章 归来\n正文。\n第二卷 风止\n正文。\n第三章 尾声\n正文。';
+const treeBook = { id: '9'.repeat(24), title: 'Hierarchy', shelf: 'default', length: hierarchical.length, position: 0, marks: [], chapterCount: 6, added: 99, lastRead: Date.now() };
+saved.books.push(treeBook); saved.prefs.readingMode = 'paged';
+writeNative(treeBook.id + '.txt', hierarchical); writeNative('library.json', JSON.stringify(saved));
+await launch(); await tap('Hierarchy'); await zone(.5); await tap('目录');
+await tap('全部收起'); assert.ok(!(await contains('第一节 远行'))); assert.ok(await contains('第一卷 风起'));
+await tap('展开第一卷 风起'); assert.ok(await contains('第一章 初见')); assert.ok(!(await contains('第一节 远行')));
+await tap('展开第一章 初见'); assert.ok(await contains('第一节 远行'));
+await tap('第一节 远行'); await zone(.5);
+assert.ok(await contains('第一节 远行')); screenshot('android-0.9.2-immersive.png');
+await zone(.5); await tap('设置');
+assert.ok((await nodes()).some(n => n['content-desc'] === '字号数值' && n.text === '18'));
+await tap('字号数值'); adb('shell', 'input', 'text', '19'); adb('shell', 'input', 'keyevent', '66'); await pause(400);
+assert.equal(nativeState().prefs.size, 19, 'Editable numeric settings apply on keyboard completion');
+await tap('字号数值'); adb('shell', 'input', 'text', '18'); adb('shell', 'input', 'keyevent', '66'); await pause(400);
+assert.equal(nativeState().prefs.size, 18);
+await tap('纸白 ▾'); await tap('青竹');
+assert.equal(nativeState().prefs.bg, '#e5ebdf');
+assert.ok((await nodes()).some(n => n['content-desc'] === '青竹，已选择' && n.selected === 'true'));
+assert.ok(!(await nodes()).some(n => n['content-desc'] === 'R颜色滑条'));
+await tap('自定义');
+// Reveal lower controls in the floating settings sheet.
+adb('shell', 'input', 'swipe', String(size[0] * .5), String(size[1] * .84), String(size[0] * .5), String(size[1] * .37), '400'); await pause(350);
+const red = (await nodes()).find(n => n['content-desc'] === 'R颜色滑条'); assert.ok(red);
+const rb = red.bounds.match(/\d+/g).map(Number);
+adb('shell', 'input', 'swipe', String(rb[0] + 15), String((rb[1] + rb[3]) >> 1), String((rb[0] + rb[2]) >> 1), String((rb[1] + rb[3]) >> 1), '500'); await pause(400);
+assert.notEqual(nativeState().prefs.bg, '#e5ebdf');
+assert.equal(nativeState().prefs.customBackground, true);
+await tap('G颜色数值'); adb('shell', 'input', 'text', '64'); adb('shell', 'input', 'keyevent', '4'); await pause(400);
+assert.equal(nativeState().prefs.bg.slice(3, 5), '40', 'RGB numerical input updates the background live');
+screenshot('android-0.9.2-rgb.png');
+adb('shell', 'input', 'keyevent', '4'); await pause(200); await zone(.5);
+const quiet = await nodes();
+assert.ok(quiet.some(n => n.text === '第一节 远行'));
+assert.ok(!quiet.some(n => /本章/.test(n.text)), 'Whole-book page index finishes in background');
+adb('shell', 'dumpsys', 'battery', 'set', 'level', '37'); await pause(300);
+assert.ok(await contains('电量 37%'), 'Battery information responds to the system broadcast');
+adb('shell', 'dumpsys', 'battery', 'reset');
+console.log('PASS: hierarchical collapse/expand, immersive information, chapter controls, selected themes and live RGB sliders');
 const log = adb('logcat', '-d', '-t', '1000', '-s', 'AndroidRuntime:E').toString();
 assert.ok(!log.includes('FATAL EXCEPTION'), log);
-console.log('PASS: 0.9.1 native UI, name-only search, legacy preference migration, bookmark and process restart persistence');
+console.log('PASS: 0.9.2 native UI, name-only search, legacy preference migration, bookmark and process restart persistence');

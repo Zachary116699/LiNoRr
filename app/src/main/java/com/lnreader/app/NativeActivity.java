@@ -27,6 +27,20 @@ public final class NativeActivity extends Activity {
     private ScrollView shelfScroll, readingScroll;
     private TextView progressLabel, chapterLabel, readingText;
     private LinearLayout readerHeader, readerFooter;
+    private LinearLayout quietHeader, quietFooter;
+    private TextView quietTitle, quietProgress, deviceStatus;
+    private int battery = -1;
+    private boolean statusRegistered;
+    private final Set<Integer> collapsedChapters = new HashSet<>();
+    private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (Intent.ACTION_BATTERY_CHANGED.equals(intent.getAction())) {
+                int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 0);
+                battery = scale <= 0 ? -1 : Math.round(100f * intent.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) / scale);
+            }
+            updateDeviceStatus();
+        }
+    };
     private ReaderSurface readerSurface;
     private PagedReaderView pagedReader;
     private SeekBar progress;
@@ -36,12 +50,16 @@ public final class NativeActivity extends Activity {
     private int chapter, bodyOffset, pagePrefix, searchToken;
     private boolean list, importing, positioning, controlsVisible, endReached;
     private int pageNumber = 1, pageCount = 1;
+    private volatile int paginationGeneration;
+    private int[] pageTotals;
+    private Runnable indexTask;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Dialog busyDialog;
     private TextView busyText;
     private Runnable progressTask;
     private long lastVolumeTurn;
+    private final Runnable backgroundSave = () -> { if (lib != null) persist(); };
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -65,9 +83,35 @@ public final class NativeActivity extends Activity {
     private void toast(String message) { runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()); }
     private void base(int background, boolean dark) {
         root = column(); root.setBackgroundColor(background); setContentView(root);
-        root.setOnApplyWindowInsetsListener((view, insets) -> { view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom()); return insets.consumeSystemWindowInsets(); });
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            // Stable safe space prevents repagination when system bars are toggled.
+            if (current != null && Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets safe = insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            } else if (current != null) view.setPadding(insets.getStableInsetLeft(), insets.getStableInsetTop(), insets.getStableInsetRight(), insets.getStableInsetBottom());
+            else view.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(), insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            return insets.consumeSystemWindowInsets();
+        });
         getWindow().setStatusBarColor(background); getWindow().setNavigationBarColor(background);
         root.setSystemUiVisibility(dark ? 0 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        systemBars(current == null || controlsVisible);
+    }
+    private void systemBars(boolean visible) {
+        int flags = readerInkSafe() ? 0 : View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        if (current != null) flags |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+        if (!visible) flags |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+        root.setSystemUiVisibility(flags);
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                if (visible) controller.show(WindowInsets.Type.systemBars()); else controller.hide(WindowInsets.Type.systemBars());
+            }
+        }
+    }
+    private boolean readerInkSafe() { return current != null && readerInk() == 0xffdeded4; }
+    private void updateDeviceStatus() {
+        if (deviceStatus != null && current != null) deviceStatus.setText(getString(R.string.device_status, android.text.format.DateFormat.getTimeFormat(this).format(new Date()), battery < 0 ? "—" : battery + "%"));
     }
     private void persist() {
         try {
@@ -90,6 +134,7 @@ public final class NativeActivity extends Activity {
     };
 
     private void showShelf() {
+        paginationGeneration++; pageTotals = null;
         current = null; source = ""; base(BG, false);
         shelfScroll = new ScrollView(this); shelfScroll.setFillViewport(true); root.addView(shelfScroll, new LinearLayout.LayoutParams(-1, -1));
         content = column(); padding(content, 24, 24); shelfScroll.addView(content);
@@ -189,7 +234,7 @@ public final class NativeActivity extends Activity {
 
     private void openBook(JSONObject book, int offset) {
         if (importing) return; showBusy("正在翻开书页…");
-        io.execute(() -> { try { String value = lib.text(book); List<BookParser.Chapter> parsed = BookParser.parse(value); runOnUiThread(() -> { hideBusy(); current = book; controlsVisible = false; source = value; chapters = parsed; set(current, "lastRead", System.currentTimeMillis()); set(current, "chapterCount", parsed.size()); set(current, "length", source.length()); buildReader(offset < 0 ? current.optInt("position") : offset); persist(); }); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("无法打开，请重新导入原文件：" + e.getMessage()); } });
+        io.execute(() -> { try { String value = lib.text(book); List<BookParser.Chapter> parsed = BookParser.parse(value); runOnUiThread(() -> { hideBusy(); current = book; controlsVisible = false; collapsedChapters.clear(); source = value; chapters = parsed; set(current, "lastRead", System.currentTimeMillis()); set(current, "chapterCount", parsed.size()); set(current, "length", source.length()); buildReader(offset < 0 ? current.optInt("position") : offset); persist(); }); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("无法打开，请重新导入原文件：" + e.getMessage()); } });
     }
     private int readerBg() { try { return Color.parseColor(lib.prefs().optString("bg", "#f7f3e8")); } catch (Exception e) { return 0xfff7f3e8; } }
     private int readerInk() { int bg = readerBg(); return Color.red(bg) * .299 + Color.green(bg) * .587 + Color.blue(bg) * .114 < 135 ? 0xffdeded4 : 0xff363c32; }
@@ -198,8 +243,13 @@ public final class NativeActivity extends Activity {
     private int pageSourceOffset(int local) { return local <= pagePrefix ? chapters.get(chapter).start : Math.min(chapters.get(chapter).end - 1, bodyOffset + local - pagePrefix); }
     private void showControls(boolean show) {
         controlsVisible = show; readerHeader.setVisibility(show ? View.VISIBLE : View.GONE); readerFooter.setVisibility(show ? View.VISIBLE : View.GONE);
+        quietHeader.setVisibility(show ? View.GONE : View.VISIBLE); quietFooter.setVisibility(show ? View.GONE : View.VISIBLE);
+        readerSurface.overlays(show ? readerHeader : quietHeader, show ? readerFooter : quietFooter);
+        systemBars(show);
     }
     private void buildReader(int offset) {
+        ++paginationGeneration; pageTotals = null;
+        if (indexTask != null) handler.removeCallbacks(indexTask);
         if (progressTask != null) handler.removeCallbacks(progressTask);
         base(readerBg(), readerInk() == 0xffdeded4);
         ReaderSurface surface = new ReaderSurface(this, isPagedMode(), new ReaderSurface.Listener() {
@@ -215,12 +265,20 @@ public final class NativeActivity extends Activity {
                     set(current, "position", endReached ? source.length() - 1 : pageSourceOffset(local)); positionUI();
                 }
                 public void turn(int direction) { turnPage(direction); }
+                public void layoutChanged() {
+                    if (readerSurface != surface) return;
+                    int generation = ++paginationGeneration; pageTotals = null;
+                    if (indexTask != null) handler.removeCallbacks(indexTask);
+                    indexTask = () -> indexPages(generation); handler.postDelayed(indexTask, 250);
+                }
             });
-            pagedReader.configure((float) lib.prefs().optDouble("size", 20), readingTypeface(), readerInk(), readerBg(), (float) lib.prefs().optDouble("line", 1.5));
+            pagedReader.configure((float) lib.prefs().optDouble("size", 18), readingTypeface(), readerInk(), readerBg(), (float) lib.prefs().optDouble("line", 1.4));
+            pagedReader.setPadding(dp(24), dp(58), dp(24), dp(40));
             surface.addView(pagedReader, new FrameLayout.LayoutParams(-1, -1));
         } else {
             readingScroll = new ScrollView(this); readingScroll.setFillViewport(false); surface.scrollChild(readingScroll);
-            surface.addView(readingScroll, new FrameLayout.LayoutParams(-1, -1)); readingBody = column(); padding(readingBody, 24, 20); readingScroll.addView(readingBody);
+            FrameLayout.LayoutParams scrollParams = new FrameLayout.LayoutParams(-1, -1); scrollParams.topMargin = dp(48); scrollParams.bottomMargin = dp(32);
+            surface.addView(readingScroll, scrollParams); readingBody = column(); padding(readingBody, 24, 10); readingScroll.addView(readingBody);
             readingScroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> { if (positioning) return; if (progressTask != null) handler.removeCallbacks(progressTask); progressTask = () -> { capture(); persist(); }; handler.postDelayed(progressTask, 250); });
         }
         readerHeader = row(); readerHeader.setBackgroundColor(readerBg()); padding(readerHeader, 6, 6); readerHeader.addView(readerButton("书架", this::back));
@@ -228,13 +286,51 @@ public final class NativeActivity extends Activity {
         chapterLabel = text("", 13, MUTED); chapterLabel.setMaxLines(1); chapterLabel.setEllipsize(TextUtils.TruncateAt.END); titles.addView(chapterLabel); weighted(readerHeader, titles);
         readerHeader.addView(readerButton("＋书签", this::addMark)); surface.addView(readerHeader, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
         readerFooter = column(); readerFooter.setBackgroundColor(readerBg()); padding(readerFooter, 16, 8); progressLabel = text("", 14, MUTED); readerFooter.addView(progressLabel);
-        progress = new SeekBar(this); progress.setMax(1000); progress.setContentDescription("阅读进度"); readerFooter.addView(progress, new LinearLayout.LayoutParams(-1, dp(36)));
+        LinearLayout navigation = row(); navigation.addView(readerButton("上一章", () -> chapterStep(-1)));
+        progress = new SeekBar(this); progress.setMax(1000); progress.setContentDescription("阅读进度"); weighted(navigation, progress);
+        navigation.addView(readerButton("下一章", () -> chapterStep(1))); readerFooter.addView(navigation);
         LinearLayout actions = row(); weighted(actions, readerButton("目录", this::catalog)); weighted(actions, readerButton("书签", this::marks));
-        weighted(actions, readerButton("日 / 夜", () -> { capture(); set(lib.prefs(), "bg", readerBg() == 0xff20231f ? "#f7f3e8" : "#20231f"); buildReader(current.optInt("position")); persist(); }));
+        weighted(actions, readerButton("日 / 夜", () -> { capture(); set(lib.prefs(), "customBackground", false); applyBackground(readerBg() == 0xff20231f ? "#f7f3e8" : "#20231f"); }));
         weighted(actions, readerButton("设置", this::settings)); readerFooter.addView(actions); surface.addView(readerFooter, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
-        surface.overlays(readerHeader, readerFooter); showControls(controlsVisible);
+        quietHeader = row(); padding(quietHeader, 8, 0); quietHeader.setBackgroundColor(readerBg());
+        Button exit = readerButton("‹", this::back); exit.setContentDescription("返回书架"); quietHeader.addView(exit);
+        quietTitle = text("", 13, readerInk()); quietTitle.setAlpha(.65f); quietTitle.setSingleLine(true); quietTitle.setEllipsize(TextUtils.TruncateAt.END); weighted(quietHeader, quietTitle);
+        surface.addView(quietHeader, new FrameLayout.LayoutParams(-1, dp(48), Gravity.TOP));
+        quietFooter = row(); padding(quietFooter, 24, 0); quietFooter.setBackgroundColor(readerBg());
+        quietProgress = text("", 12, readerInk()); quietProgress.setAlpha(.65f); weighted(quietFooter, quietProgress);
+        deviceStatus = text("", 12, readerInk()); deviceStatus.setAlpha(.65f); quietFooter.addView(deviceStatus); updateDeviceStatus();
+        surface.addView(quietFooter, new FrameLayout.LayoutParams(-1, dp(32), Gravity.BOTTOM));
+        showControls(controlsVisible);
         progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onProgressChanged(SeekBar s, int p, boolean fromUser) {} public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) { jump((int) ((long) s.getProgress() * Math.max(0, source.length() - 1) / 1000)); persist(); } });
         jump(offset);
+    }
+    private void indexPages(int generation) {
+        if (generation != paginationGeneration || pagedReader == null || !pagedReader.ready()) return;
+        final PagedReaderView.PageCounter counter = pagedReader.counter(); final String bookText = source;
+        final List<BookParser.Chapter> bookChapters = chapters;
+        final int spacing = dp((float) (lib.prefs().optDouble("paragraph", .4) * lib.prefs().optDouble("size", 18)));
+        io.execute(() -> {
+            int[] totals = new int[bookChapters.size() + 1];
+            for (int i = 0; i < bookChapters.size(); i++) {
+                if (generation != paginationGeneration || Thread.currentThread().isInterrupted()) return;
+                BookParser.Chapter c = bookChapters.get(i); String body = bookText.substring(c.start, c.end);
+                while (body.startsWith("\n")) body = body.substring(1);
+                int line = body.indexOf('\n');
+                if (line >= 0 && body.substring(0, line).trim().replaceFirst("^#+\\s*", "").equals(c.title)) body = body.substring(line + 1);
+                SpannableString styled = styledText(c.title + "\n\n" + body, spacing);
+                styleHeading(styled, c.title.length()); totals[i + 1] = totals[i] + counter.count(styled);
+            }
+            handler.post(() -> { if (generation == paginationGeneration && current != null) { pageTotals = totals; positionUI(); } });
+        });
+    }
+    private static void styleHeading(SpannableString styled, int length) {
+        styled.setSpan(new android.text.style.RelativeSizeSpan(1.25f), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        styled.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+    private void chapterStep(int direction) {
+        int next = chapter + direction;
+        if (next < 0 || next >= chapters.size()) { toast(direction < 0 ? "已到第一章" : "已到最后一章"); return; }
+        jump(chapters.get(next).start); persist();
     }
     private Typeface readingTypeface() {
         String font = lib.prefs().optString("font", "系统默认");
@@ -245,24 +341,26 @@ public final class NativeActivity extends Activity {
         if (progressTask != null) handler.removeCallbacks(progressTask); positioning = true; offset = Math.max(0, Math.min(source.length() - 1, offset)); endReached = offset >= source.length() - 2;
         chapter = chapters.size() - 1; for (int i = 0; i < chapters.size(); i++) if (chapters.get(i).end > offset) { chapter = i; break; }
         BookParser.Chapter c = chapters.get(chapter); set(current, "position", offset); set(current, "chapterTitle", c.title); chapterLabel.setText(c.title);
+        quietTitle.setText(c.title);
         bodyOffset = c.start; String body = source.substring(c.start, c.end);
         while (body.startsWith("\n")) { body = body.substring(1); bodyOffset++; }
         int firstLineEnd = body.indexOf('\n'); if (firstLineEnd >= 0 && body.substring(0, firstLineEnd).trim().replaceFirst("^#+\\s*", "").equals(c.title)) { bodyOffset += firstLineEnd + 1; body = body.substring(firstLineEnd + 1); }
         if (isPagedMode()) {
             pagePrefix = c.title.length() + 2; SpannableString styled = styledText(c.title + "\n\n" + body);
-            styled.setSpan(new android.text.style.RelativeSizeSpan(1.25f), 0, c.title.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-            styled.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), 0, c.title.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            styleHeading(styled, c.title.length());
             pagedReader.content(styled, offset <= bodyOffset ? 0 : pagePrefix + offset - bodyOffset);
             positioning = false; positionUI(); return;
         }
-        readingBody.removeAllViews(); TextView heading = text(c.title, (float) lib.prefs().optDouble("size", 20) * 1.25f, readerInk()); heading.setTypeface(readingTypeface(), Typeface.BOLD); heading.setLineSpacing(0, 1.4f); readingBody.addView(heading); gap(readingBody, 20);
-        readingText = text(body, (float) lib.prefs().optDouble("size", 20), readerInk()); readingText.setTypeface(readingTypeface()); readingText.setTextIsSelectable(true); readingText.setLineSpacing(0, (float) lib.prefs().optDouble("line", 1.5));
+        readingBody.removeAllViews(); TextView heading = text(c.title, (float) lib.prefs().optDouble("size", 18) * 1.25f, readerInk()); heading.setTypeface(readingTypeface(), Typeface.BOLD); heading.setLineSpacing(0, 1.4f); readingBody.addView(heading); gap(readingBody, 20);
+        readingText = text(body, (float) lib.prefs().optDouble("size", 18), readerInk()); readingText.setTypeface(readingTypeface()); readingText.setTextIsSelectable(true); readingText.setLineSpacing(0, (float) lib.prefs().optDouble("line", 1.4));
         readingText.setText(styledText(body)); readingBody.addView(readingText, new LinearLayout.LayoutParams(-1, -2)); gap(readingBody, 20);
         int desired = offset; readingText.post(() -> { if (readingText.getLayout() != null) { int local = Math.max(0, Math.min(readingText.length(), desired - bodyOffset)); int y = desired <= c.start ? 0 : readingText.getTop() + readingText.getLayout().getLineTop(readingText.getLayout().getLineForOffset(local)); readingScroll.scrollTo(0, y); } positioning = false; positionUI(); });
     }
     private SpannableString styledText(String text) {
+        return styledText(text, dp((float) (lib.prefs().optDouble("paragraph", .4) * lib.prefs().optDouble("size", 18))));
+    }
+    private static SpannableString styledText(String text, int spacing) {
         SpannableString styled = new SpannableString(text); int cursor = 0;
-        int spacing = dp((float) (lib.prefs().optDouble("paragraph", .5) * lib.prefs().optDouble("size", 20)));
         for (String line : text.split("\n", -1)) { int end = Math.min(text.length(), cursor + line.length() + 1); if (end > cursor) styled.setSpan(new ParagraphSpace(spacing), cursor, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE); cursor = end; }
         return styled;
     }
@@ -308,15 +406,51 @@ public final class NativeActivity extends Activity {
         if (progressLabel == null || current == null) return;
         progressLabel.setText(isPagedMode() ? getString(R.string.reading_page_position, chapter + 1, chapters.size(), pageNumber, pageCount, percent(current)) : getString(R.string.reading_position, chapter + 1, chapters.size(), percent(current)));
         progress.setProgress((int) (1000L * current.optInt("position") / Math.max(1, source.length())));
+        if (quietProgress != null) {
+            int page = pageNumber, count = pageCount;
+            if (!isPagedMode() && readingScroll != null && readingBody != null) {
+                int height = Math.max(1, readingScroll.getHeight());
+                count = Math.max(1, (int) Math.ceil((double) readingBody.getHeight() / height));
+                page = Math.min(count, 1 + (int) Math.ceil((double) readingScroll.getScrollY() / height));
+            }
+            String pages = isPagedMode() && pageTotals != null ? (pageTotals[chapter] + pageNumber) + "/" + pageTotals[pageTotals.length - 1] : "本章 " + page + "/" + count;
+            quietProgress.setText(getString(R.string.quiet_progress, pages, percent(current)));
+        }
     }
     private void back() { capture(); persist(); if (progressTask != null) handler.removeCallbacks(progressTask); showShelf(); }
     private void catalog() {
         LinearLayout body = column(); EditText search = input("搜索章节", ""); body.addView(search); ListView entries = new ListView(this); body.addView(entries, new LinearLayout.LayoutParams(-1, dp(getResources().getConfiguration().screenHeightDp / 2))); Dialog d = sheet("目录 · " + chapters.size() + " 章", body);
+        ChapterTree tree = new ChapterTree(chapters);
+        for (int p = tree.parent[chapter]; p >= 0; p = tree.parent[p]) collapsedChapters.remove(p);
         List<Integer> indices = new ArrayList<>();
-        Runnable render = () -> { indices.clear(); List<String> labels = new ArrayList<>(); String term = search.getText().toString().trim().toLowerCase(Locale.ROOT); for (int i = 0; i < chapters.size(); i++) { BookParser.Chapter c = chapters.get(i); if (!c.title.toLowerCase(Locale.ROOT).contains(term)) continue; indices.add(i); String indent = c.level <= 1 ? "" : c.level <= 3 ? "  " : "    "; labels.add((i == chapter ? "● " : "") + indent + c.title); } entries.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels)); };
-        entries.setOnItemClickListener((parent, view, index, id) -> { jump(chapters.get(indices.get(index)).start); persist(); d.dismiss(); });
+        BaseAdapter adapter = new BaseAdapter() {
+            public int getCount() { return indices.size(); }
+            public Object getItem(int position) { return indices.get(position); }
+            public long getItemId(int position) { return indices.get(position); }
+            public View getView(int position, View recycled, ViewGroup parent) {
+                int index = indices.get(position); LinearLayout item = row();
+                item.setPadding(dp(Math.min(4, tree.depth[index]) * 16), 0, 0, 0);
+                if (tree.branch[index]) {
+                    Button toggle = button(collapsedChapters.contains(index) && search.length() == 0 ? "▸" : "▾", false, () -> {
+                        int first = entries.getFirstVisiblePosition(); View top = entries.getChildAt(0); int y = top == null ? 0 : top.getTop();
+                        if (!collapsedChapters.remove(index)) collapsedChapters.add(index);
+                        indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); notifyDataSetChanged(); entries.setSelectionFromTop(first, y);
+                    });
+                    toggle.setContentDescription((collapsedChapters.contains(index) ? "展开" : "收起") + chapters.get(index).title);
+                    item.addView(toggle, new LinearLayout.LayoutParams(dp(44), dp(48)));
+                } else item.addView(new View(NativeActivity.this), new LinearLayout.LayoutParams(dp(44), 1));
+                TextView label = text((index == chapter ? "● " : "") + chapters.get(index).title, 16, index == chapter ? ACCENT : INK);
+                padding(label, 4, 12); label.setMinHeight(dp(48)); weighted(item, label);
+                label.setOnClickListener(v -> { jump(chapters.get(index).start); persist(); d.dismiss(); });
+                return item;
+            }
+        };
+        entries.setAdapter(adapter);
+        Runnable render = () -> { indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); adapter.notifyDataSetChanged(); };
+        LinearLayout tools = row(); weighted(tools, button("全部展开", false, () -> { collapsedChapters.clear(); render.run(); }));
+        weighted(tools, button("全部收起", false, () -> { for (int i = 0; i < tree.branch.length; i++) if (tree.branch[i]) collapsedChapters.add(i); render.run(); })); body.addView(tools, 1);
         search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int a, int c, int f) {} public void onTextChanged(CharSequence s, int a, int b, int c) { render.run(); } public void afterTextChanged(Editable e) {} }); render.run();
-        entries.setSelection(chapter);
+        entries.setSelection(Math.max(0, indices.indexOf(chapter)));
     }
     private JSONArray bookmarks() { JSONArray marks = current.optJSONArray("marks"); if (marks == null) { marks = new JSONArray(); set(current, "marks", marks); } return marks; }
     private void addMark() { capture(); JSONArray marks = bookmarks(); for (int i = 0; i < marks.length(); i++) if (Math.abs(marks.optJSONObject(i).optInt("offset") - current.optInt("position")) < 80) { toast("这个位置已经有书签"); return; } marks.put(json("offset", current.optInt("position"), "title", chapters.get(chapter).title, "date", System.currentTimeMillis())); persist(); toast("已添加书签"); }
@@ -326,10 +460,10 @@ public final class NativeActivity extends Activity {
         for (int i = 0; i < marks.length(); i++) { int index = i; JSONObject mark = marks.optJSONObject(i); LinearLayout r = row(); weighted(r, button(mark.optString("title") + " · " + (int) (100L * mark.optInt("offset") / Math.max(1, source.length())) + "%", false, () -> { jump(mark.optInt("offset")); persist(); d.dismiss(); })); r.addView(button("×", false, () -> { marks.remove(index); persist(); d.dismiss(); marks(); })); body.addView(r); }
     }
     private void settings() {
-        capture(); LinearLayout body = column(); Dialog d = sheet("阅读设置", body); LinearLayout themes = row(); String[] names = { "纸白", "青竹", "夜读" }, colors = { "#f7f3e8", "#e5ebdf", "#20231f" };
-        body.addView(text("翻页方式", 15, INK)); Spinner mode = new Spinner(this);
+        capture(); LinearLayout body = column(); Dialog d = sheet("阅读设置", body); d.setOnDismissListener(dialog -> body.clearFocus());
+        Spinner mode = new Spinner(this);
         mode.setContentDescription("翻页方式"); mode.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, new String[]{ "左右翻页", "滚动翻页" }));
-        mode.setSelection(isPagedMode() ? 0 : 1); body.addView(mode);
+        mode.setSelection(isPagedMode() ? 0 : 1); settingRow(body, "翻页方式", mode);
         mode.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             public void onNothingSelected(android.widget.AdapterView<?> parent) {}
             public void onItemSelected(android.widget.AdapterView<?> parent, View view, int index, long id) {
@@ -338,19 +472,104 @@ public final class NativeActivity extends Activity {
                 capture(); set(lib.prefs(), "readingMode", selected); buildReader(current.optInt("position")); persist();
             }
         });
-        Switch volume = new Switch(this); volume.setText("音量键翻页"); volume.setTextSize(15); volume.setTextColor(INK); padding(volume, 0, 10);
-        volume.setChecked(lib.prefs().optBoolean("volumeKeys", true)); volume.setOnCheckedChangeListener((v, enabled) -> { set(lib.prefs(), "volumeKeys", enabled); persist(); }); body.addView(volume); gap(body, 15);
-        for (int i = 0; i < names.length; i++) { String color = colors[i]; weighted(themes, button(names[i], false, () -> { set(lib.prefs(), "bg", color); buildReader(current.optInt("position")); persist(); })); } body.addView(themes); gap(body, 16);
-        LinearLayout rgb = row(); int color = readerBg(); EditText[] values = new EditText[3]; String[] labels = { "R", "G", "B" }; int[] channels = { Color.red(color), Color.green(color), Color.blue(color) };
-        for (int i = 0; i < 3; i++) { LinearLayout c = column(); c.addView(text(labels[i], 13, MUTED)); values[i] = input(labels[i], String.valueOf(channels[i])); values[i].setInputType(android.text.InputType.TYPE_CLASS_NUMBER); weighted(rgb, c); c.addView(values[i]); } body.addView(rgb);
-        body.addView(button("应用 RGB 背景色", false, () -> { int[] cs = new int[3]; try { for (int i = 0; i < 3; i++) cs[i] = Math.max(0, Math.min(255, Integer.parseInt(values[i].getText().toString()))); } catch (Exception e) { toast("RGB 请输入 0～255 的数值"); return; } set(lib.prefs(), "bg", String.format(Locale.ROOT, "#%02x%02x%02x", cs[0], cs[1], cs[2])); buildReader(current.optInt("position")); persist(); }));
-        body.addView(button("字体：" + new File(lib.prefs().optString("font", "系统默认")).getName(), false, this::fonts));
-        settingSlider(body, "字号", "size", 14, 36, 1); settingSlider(body, "行间距", "line", 1.2, 2.8, .1); settingSlider(body, "段间距", "paragraph", 0, 2.5, .1);
-        body.addView(button("恢复默认设置", false, () -> { set(lib.state, "prefs", defaultPrefs()); buildReader(current.optInt("position")); persist(); d.dismiss(); }));
+        Switch volume = new Switch(this); volume.setContentDescription("音量键翻页");
+        volume.setChecked(lib.prefs().optBoolean("volumeKeys", true)); volume.setOnCheckedChangeListener((v, enabled) -> { set(lib.prefs(), "volumeKeys", enabled); persist(); }); settingRow(body, "音量键翻页", volume);
+        Button font = button(new File(lib.prefs().optString("font", "系统默认")).getName(), false, () -> { d.dismiss(); fonts(); }); settingRow(body, "字体", font);
+        settingNumber(body, "字号", "size", 14, 36); settingNumber(body, "行间距", "line", 1.2, 2.8); settingNumber(body, "段间距", "paragraph", 0, 2.5);
+        backgroundPicker(body);
+        body.addView(button("恢复默认设置", false, () -> { body.clearFocus(); set(lib.state, "prefs", defaultPrefs()); buildReader(current.optInt("position")); persist(); d.dismiss(); }));
     }
-    private void settingSlider(LinearLayout body, String title, String key, double min, double max, double step) {
-        TextView label = text(title + "  " + lib.prefs().optDouble(key), 14, MUTED); gap(body, 13); body.addView(label); SeekBar slider = new SeekBar(this); slider.setMax((int) Math.round((max - min) / step)); slider.setProgress((int) Math.round((lib.prefs().optDouble(key) - min) / step)); body.addView(slider);
-        slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onStartTrackingTouch(SeekBar s) {} public void onProgressChanged(SeekBar s, int p, boolean fromUser) { label.setText(getString(R.string.setting_value, title, min + p * step)); } public void onStopTrackingTouch(SeekBar s) { capture(); set(lib.prefs(), key, min + s.getProgress() * step); buildReader(current.optInt("position")); persist(); } });
+    private void settingRow(LinearLayout body, String title, View value) {
+        LinearLayout line = row(); line.setMinimumHeight(dp(52)); weighted(line, text(title, 16, INK)); line.addView(value); body.addView(line);
+    }
+    private void settingNumber(LinearLayout body, String title, String key, double min, double max) {
+        EditText value = input(title, formatNumber(lib.prefs().optDouble(key))); value.setTextSize(16); value.setGravity(Gravity.END); value.setWidth(dp(88)); value.setSelectAllOnFocus(true);
+        value.setContentDescription(title + "数值"); value.setInputType(InputType.TYPE_CLASS_NUMBER | (key.equals("size") ? 0 : InputType.TYPE_NUMBER_FLAG_DECIMAL)); value.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        Runnable apply = () -> {
+            try {
+                double number = Double.parseDouble(value.getText().toString());
+                if (!Double.isFinite(number) || number < min || number > max || (key.equals("size") && number != Math.rint(number))) throw new NumberFormatException();
+                if (Math.abs(lib.prefs().optDouble(key) - number) < .0001) return;
+                capture(); int position = current.optInt("position"); set(lib.prefs(), key, number); buildReader(position); persist(); value.setError(null);
+            } catch (NumberFormatException error) { value.setError("请输入 " + formatNumber(min) + "～" + formatNumber(max)); }
+        };
+        value.setOnFocusChangeListener((v, focus) -> { if (!focus) apply.run(); });
+        value.setOnEditorActionListener((v, action, event) -> { apply.run(); ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(value.getWindowToken(), 0); value.clearFocus(); return true; });
+        settingRow(body, title, value);
+    }
+    private String formatNumber(double value) { return value == Math.rint(value) ? String.valueOf((int) value) : String.format(Locale.ROOT, "%.1f", value); }
+    private void colorViews(View view) {
+        if (view instanceof TextView) ((TextView) view).setTextColor(readerInk());
+        if (view instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) view).getChildCount(); i++) colorViews(((ViewGroup) view).getChildAt(i));
+    }
+    private void applyBackground(String color) {
+        set(lib.prefs(), "bg", color);
+        root.setBackgroundColor(readerBg()); readerSurface.setBackgroundColor(readerBg());
+        for (View view : new View[]{readerHeader, readerFooter, quietHeader, quietFooter}) { view.setBackgroundColor(readerBg()); colorViews(view); }
+        if (pagedReader != null) pagedReader.colors(readerInk(), readerBg());
+        if (readingBody != null) colorViews(readingBody);
+        getWindow().setStatusBarColor(readerBg()); getWindow().setNavigationBarColor(readerBg()); systemBars(controlsVisible);
+        handler.removeCallbacks(backgroundSave); handler.postDelayed(backgroundSave, 250);
+    }
+    private void backgroundPicker(LinearLayout body) {
+        String[] names = {"纸白", "青竹", "米黄", "暖灰", "雾蓝", "浅杏", "淡粉", "夜读", "自定义"};
+        String[] colors = {"#f7f3e8", "#e5ebdf", "#d4c9aa", "#e4e0d9", "#dce7ec", "#f2e2cc", "#f0e0e5", "#20231f"};
+        LinearLayout choices = column(), custom = column(); choices.setVisibility(View.GONE); custom.setVisibility(View.GONE);
+        Button expand = button("", false, () -> choices.setVisibility(choices.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        settingRow(body, "背景色", expand); body.addView(choices);
+        Button[] presets = new Button[names.length]; int[] channels = new int[3]; boolean[] syncing = {false};
+        SeekBar[] sliders = new SeekBar[3]; EditText[] values = new EditText[3];
+        TextView preview = text("", 16, INK); preview.setGravity(Gravity.CENTER); preview.setMinHeight(dp(50)); custom.addView(preview);
+        Runnable render = () -> {
+            String selected = lib.prefs().optString("bg"); int match = -1;
+            for (int i = 0; i < colors.length; i++) if (colors[i].equalsIgnoreCase(selected)) match = i;
+            boolean isCustom = lib.prefs().optBoolean("customBackground", match < 0); int selectedIndex = isCustom ? 8 : match;
+            expand.setText(getString(R.string.background_choice, selectedIndex < 0 ? "自定义" : names[selectedIndex]));
+            for (int i = 0; i < presets.length; i++) {
+                Button b = presets[i]; if (b == null) continue;
+                GradientDrawable background = shape(i < colors.length ? Color.parseColor(colors[i]) : 0xffeeeee6, 8);
+                if (i == selectedIndex) background.setStroke(dp(2), ACCENT);
+                b.setBackground(background); b.setText(getString(R.string.selected_choice, i == selectedIndex ? "✓ " : "", names[i])); b.setSelected(i == selectedIndex); b.setTextColor(i == 7 ? 0xffdeded4 : INK);
+                b.setContentDescription(names[i] + (i == selectedIndex ? "，已选择" : ""));
+            }
+            custom.setVisibility(isCustom ? View.VISIBLE : View.GONE);
+            int bg = readerBg(); channels[0] = Color.red(bg); channels[1] = Color.green(bg); channels[2] = Color.blue(bg);
+            syncing[0] = true;
+            for (int i = 0; i < 3; i++) if (values[i] != null) { sliders[i].setProgress(channels[i]); if (!values[i].hasFocus()) values[i].setText(String.valueOf(channels[i])); }
+            syncing[0] = false;
+            preview.setText(selected.toUpperCase(Locale.ROOT)); preview.setBackground(shape(bg, 8)); preview.setTextColor(readerInk());
+        };
+        for (int i = 0; i < names.length; i++) {
+            if (i % 3 == 0) choices.addView(row()); LinearLayout line = (LinearLayout) choices.getChildAt(choices.getChildCount() - 1);
+            final int index = i;
+            presets[i] = button(names[i], false, () -> { set(lib.prefs(), "customBackground", index == 8); if (index < colors.length) applyBackground(colors[index]); else persist(); render.run(); });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1); params.setMargins(dp(3), dp(3), dp(3), dp(3)); line.addView(presets[i], params);
+        }
+        choices.addView(custom); gap(custom, 8);
+        String[] labels = {"R", "G", "B"}; int[] tints = {0xffbd5555, 0xff51895e, 0xff517db5};
+        for (int i = 0; i < 3; i++) {
+            final int index = i; LinearLayout line = row(); TextView label = text(labels[i], 16, tints[i]); line.addView(label, new LinearLayout.LayoutParams(dp(24), -2));
+            SeekBar slider = new SeekBar(this); sliders[i] = slider; slider.setMax(255); slider.setProgressTintList(android.content.res.ColorStateList.valueOf(tints[i])); slider.setThumbTintList(android.content.res.ColorStateList.valueOf(tints[i])); slider.setContentDescription(labels[i] + "颜色滑条"); weighted(line, slider);
+            EditText value = input(labels[i], ""); values[i] = value; value.setWidth(dp(65)); value.setInputType(InputType.TYPE_CLASS_NUMBER); value.setSelectAllOnFocus(true); value.setContentDescription(labels[i] + "颜色数值"); line.addView(value); custom.addView(line);
+            slider.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                public void onStartTrackingTouch(SeekBar s) {}
+                public void onStopTrackingTouch(SeekBar s) { persist(); }
+                public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
+                    if (!fromUser || syncing[0]) return; channels[index] = progress; syncing[0] = true; value.setText(String.valueOf(progress)); syncing[0] = false;
+                    applyBackground(String.format(Locale.ROOT, "#%02x%02x%02x", channels[0], channels[1], channels[2])); render.run();
+                }
+            });
+            value.addTextChangedListener(new TextWatcher() {
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                public void onTextChanged(CharSequence s, int start, int before, int count) {
+                    if (syncing[0]) return;
+                    try { int n = Integer.parseInt(s.toString()); if (n < 0 || n > 255) throw new NumberFormatException(); value.setError(null); channels[index] = n; applyBackground(String.format(Locale.ROOT, "#%02x%02x%02x", channels[0], channels[1], channels[2])); render.run(); }
+                    catch (NumberFormatException e) { value.setError("0～255"); }
+                }
+                public void afterTextChanged(Editable e) {}
+            });
+        }
+        render.run();
     }
     private void fonts() {
         List<String> names = new ArrayList<>(Arrays.asList("系统默认", "系统衬线", "等宽字体", "自选字体", "导入 TTF / OTF 字体…")); List<String> values = new ArrayList<>(names);
@@ -416,6 +635,7 @@ public final class NativeActivity extends Activity {
                     double line = p.optDouble("line", 1.5), paragraph = p.optDouble("paragraph", .5);
                     if (!p.has("readingMode")) { if (Math.abs(line - 1.9) < .001) line = 1.5; if (Math.abs(paragraph - .8) < .001) paragraph = .5; }
                     set(lib.state, "prefs", json("size", Math.max(14, Math.min(36, p.optDouble("size", 20))), "line", Math.max(1.2, Math.min(2.8, line)), "paragraph", Math.max(0, Math.min(2.5, paragraph)), "bg", p.optString("bg").matches("#[a-fA-F0-9]{6}") ? p.optString("bg") : "#f7f3e8", "font", "系统默认", "readingMode", p.optString("readingMode").equals("scroll") ? "scroll" : "paged", "volumeKeys", p.optBoolean("volumeKeys", true)));
+                    set(lib.prefs(), "defaultsVersion", p.optInt("defaultsVersion")); set(lib.prefs(), "customBackground", p.optBoolean("customBackground", false)); migrateDefaults(lib.prefs());
                 }
             }
             for (JSONObject b : imported) {
@@ -457,5 +677,15 @@ public final class NativeActivity extends Activity {
     }
     @Override public void onConfigurationChanged(android.content.res.Configuration config) { super.onConfigurationChanged(config); if (current != null) { capture(); buildReader(current.optInt("position")); } else showShelf(); }
     @Override protected void onPause() { super.onPause(); if (lib != null) { capture(); persist(); } }
-    @Override protected void onDestroy() { handler.removeCallbacksAndMessages(null); io.shutdown(); super.onDestroy(); }
+    @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus); if (focus && root != null) systemBars(current == null || controlsVisible); }
+    @Override protected void onResume() {
+        super.onResume();
+        if (!statusRegistered) {
+            IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED); filter.addAction(Intent.ACTION_TIME_TICK); filter.addAction(Intent.ACTION_TIME_CHANGED); filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+            registerReceiver(statusReceiver, filter); statusRegistered = true;
+        }
+        updateDeviceStatus();
+    }
+    @Override protected void onStop() { if (statusRegistered) { unregisterReceiver(statusReceiver); statusRegistered = false; } super.onStop(); }
+    @Override protected void onDestroy() { paginationGeneration++; if (statusRegistered) unregisterReceiver(statusReceiver); handler.removeCallbacksAndMessages(null); io.shutdownNow(); super.onDestroy(); }
 }
