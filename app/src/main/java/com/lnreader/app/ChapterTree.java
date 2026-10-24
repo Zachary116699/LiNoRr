@@ -19,6 +19,12 @@ final class ChapterTree {
             stack.push(i);
         }
     }
+    Set<Integer> collapsedOutsidePath(int current) {
+        Set<Integer> collapsed = new HashSet<>();
+        for (int i = 0; i < branch.length; i++) if (branch[i]) collapsed.add(i);
+        for (int p = parent[current]; p >= 0; p = parent[p]) collapsed.remove(p);
+        return collapsed;
+    }
     List<Integer> visible(Set<Integer> collapsed, String query) {
         String term = query.trim().toLowerCase(Locale.ROOT);
         boolean[] included = new boolean[parent.length], hidden = new boolean[parent.length];

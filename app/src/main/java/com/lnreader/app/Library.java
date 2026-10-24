@@ -30,6 +30,7 @@ final class Library {
         }
         if (!prefs.has("volumeKeys")) set(prefs, "volumeKeys", true);
         migrateDefaults(prefs);
+        if (!prefs.has("pageAnimation")) set(prefs, "pageAnimation", "slide");
     }
     static void migrateDefaults(JSONObject prefs) {
         if (prefs.optInt("defaultsVersion") >= 2) return;
@@ -38,7 +39,7 @@ final class Library {
         if (Math.abs(prefs.optDouble("paragraph", .5) - .5) < .001) set(prefs, "paragraph", .4);
         set(prefs, "defaultsVersion", 2);
     }
-    static JSONObject defaultPrefs() { return json("size", 18, "line", 1.4, "paragraph", .4, "bg", "#f7f3e8", "font", "系统默认", "readingMode", "paged", "volumeKeys", true, "defaultsVersion", 2); }
+    static JSONObject defaultPrefs() { return json("size", 18, "line", 1.4, "paragraph", .4, "bg", "#f7f3e8", "font", "系统默认", "readingMode", "paged", "volumeKeys", true, "defaultsVersion", 2, "pageAnimation", "slide"); }
     synchronized void save() throws Exception {
         set(state, "version", 1); set(state, "books", new JSONArray(books)); set(state, "shelves", new JSONArray(shelves));
         atomic(new File(root, "library.json"), state.toString(2).getBytes(StandardCharsets.UTF_8));

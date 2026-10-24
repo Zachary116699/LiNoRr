@@ -1,6 +1,8 @@
 package com.lnreader.app;
 
 import android.content.Context;
+import android.animation.ValueAnimator;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Typeface;
 import android.os.Bundle;
@@ -21,6 +23,10 @@ final class PagedReaderView extends View {
     private int page, desiredOffset;
     private float leading = 1.5f;
     private final Listener listener;
+    private Bitmap previousPage;
+    private ValueAnimator animator;
+    private float fraction = 1;
+    private int direction;
 
     public PagedReaderView(Context context) { this(context, new Listener() { public void positionChanged(int offset, int page, int count) {} public void turn(int direction) {} }); }
 
@@ -35,7 +41,7 @@ final class PagedReaderView extends View {
         paint.setTextSize(size * getResources().getDisplayMetrics().scaledDensity);
         paint.setTypeface(font); paint.setColor(ink); setBackgroundColor(background); this.leading = leading;
     }
-    void colors(int ink, int background) { paint.setColor(ink); setBackgroundColor(background); invalidate(); }
+    void colors(int ink, int background) { finishAnimation(); paint.setColor(ink); setBackgroundColor(background); invalidate(); }
     PageCounter counter() {
         return new PageCounter(new TextPaint(paint), getWidth() - getPaddingLeft() - getPaddingRight(), getHeight() - getPaddingTop() - getPaddingBottom(), leading);
     }
@@ -75,6 +81,27 @@ final class PagedReaderView extends View {
         page = next; desiredOffset = offset(); changed();
         return true;
     }
+    boolean canTurnPage(int direction) { return ready() && page + direction >= 0 && page + direction < starts.size(); }
+    boolean animating() { return animator != null && animator.isRunning(); }
+    void slide(int direction, Runnable change) {
+        finishAnimation();
+        if (getWidth() <= 0 || getHeight() <= 0) { change.run(); return; }
+        // One viewport only, including across chapter boundaries; never snapshot the book.
+        try { previousPage = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888); }
+        catch (OutOfMemoryError error) { change.run(); return; }
+        draw(new Canvas(previousPage)); this.direction = direction; fraction = 0;
+        change.run();
+        animator = ValueAnimator.ofFloat(0, 1); animator.setDuration(220);
+        animator.setInterpolator(new android.view.animation.DecelerateInterpolator());
+        animator.addUpdateListener(value -> { fraction = (float) value.getAnimatedValue(); invalidate(); });
+        animator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator animation) { recycleSnapshot(); }
+        });
+        animator.start();
+    }
+    private void recycleSnapshot() { if (previousPage != null) { previousPage.recycle(); previousPage = null; } fraction = 1; invalidate(); }
+    private void finishAnimation() { if (animator != null) { animator.cancel(); animator = null; } recycleSnapshot(); }
+    @Override protected void onDetachedFromWindow() { finishAnimation(); super.onDetachedFromWindow(); }
     boolean ready() { return layout != null && !starts.isEmpty(); }
     private void changed() {
         invalidate();
@@ -85,6 +112,13 @@ final class PagedReaderView extends View {
     }
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas); if (layout == null || starts.isEmpty()) return;
+        if (previousPage != null && fraction < 1) {
+            canvas.drawBitmap(previousPage, -direction * fraction * getWidth(), 0, null);
+            canvas.save(); canvas.translate(direction * (1 - fraction) * getWidth(), 0);
+            drawPage(canvas); canvas.restore();
+        } else drawPage(canvas);
+    }
+    private void drawPage(Canvas canvas) {
         int first = starts.get(page), last = page + 1 < starts.size() ? starts.get(page + 1) - 1 : layout.getLineCount() - 1;
         int top = layout.getLineTop(first), bottom = layout.getLineBottom(last);
         canvas.save();

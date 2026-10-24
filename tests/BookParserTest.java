@@ -16,6 +16,10 @@ public class BookParserTest {
         assert tree.visible(Set.of(1), "").equals(Arrays.asList(0, 1));
         assert tree.visible(Set.of(1), "远行").equals(Arrays.asList(1, 2, 3));
         assert tree.visible(Set.of(), "").size() == chapters.size();
+        ChapterTree paths = new ChapterTree(BookParser.parse("第一卷 开始\n第一章 甲\n第一节 乙\n第二章 丙\n第一节 丁\n第二卷 结束\n第三章 戊\n第一节 己\n"));
+        assert paths.collapsedOutsidePath(2).equals(Set.of(3, 5, 6));
+        assert paths.visible(paths.collapsedOutsidePath(2), "").equals(Arrays.asList(0, 1, 2, 3, 5));
+        assert paths.collapsedOutsidePath(0).contains(0); // Current branch itself stays collapsed.
         verify(source);
         verify("第一章 大章节\n" + "字".repeat(100000));
         verify("字".repeat(100000));
