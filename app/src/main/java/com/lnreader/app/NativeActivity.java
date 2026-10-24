@@ -254,6 +254,11 @@ public final class NativeActivity extends Activity {
         Button b = readerButton(title, action); b.setTextSize(13); b.setGravity(Gravity.CENTER); padding(b, 6, 8); b.setMinHeight(dp(72)); b.setMinimumHeight(dp(72));
         b.setCompoundDrawablesWithIntrinsicBounds(null, new ReaderIcon(icon, readerInk(), getResources().getDisplayMetrics().density), null, null); b.setCompoundDrawablePadding(dp(5)); return b;
     }
+    private ImageButton readerIconButton(String icon, String label, Runnable action) {
+        ImageButton button = new ImageButton(this); button.setImageDrawable(new ReaderIcon(icon, readerInk(), getResources().getDisplayMetrics().density));
+        button.setContentDescription(label); button.setBackground(shape(Color.TRANSPARENT, 8)); padding(button, 12, 12);
+        button.setOnClickListener(v -> action.run()); return button;
+    }
     private void schedulePageIndex() {
         int generation = ++paginationGeneration; pageTotals = null;
         if (indexTask != null) handler.removeCallbacks(indexTask);
@@ -300,26 +305,26 @@ public final class NativeActivity extends Activity {
             readingScroll.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> { if (r - l != or - ol || b - t != ob - ot) schedulePageIndex(); });
             readingScroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> { if (positioning) return; if (progressTask != null) handler.removeCallbacks(progressTask); progressTask = () -> { capture(); persist(); }; handler.postDelayed(progressTask, 250); });
         }
-        readerHeader = row(); readerHeader.setBackgroundColor(readerBg()); padding(readerHeader, 6, 6); readerHeader.addView(readerButton("书架", this::back));
+        readerHeader = row(); readerHeader.setBackgroundColor(readerBg()); padding(readerHeader, 6, 6); readerHeader.addView(readerIconButton("back", "返回书架", this::back), new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout titles = column(); TextView title = text(current.optString("title"), 16, readerInk()); title.setMaxLines(1); title.setEllipsize(TextUtils.TruncateAt.END); titles.addView(title);
-        chapterLabel = text("", 13, MUTED); chapterLabel.setMaxLines(1); chapterLabel.setEllipsize(TextUtils.TruncateAt.END); titles.addView(chapterLabel); weighted(readerHeader, titles);
-        readerHeader.addView(readerButton("＋书签", this::addMark)); surface.addView(readerHeader, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        chapterLabel = text("", 15, MUTED); chapterLabel.setMaxLines(1); chapterLabel.setEllipsize(TextUtils.TruncateAt.END); titles.addView(chapterLabel); weighted(readerHeader, titles);
+        readerHeader.addView(readerIconButton("bookmark", "书签", this::marks), new LinearLayout.LayoutParams(dp(48), dp(48))); surface.addView(readerHeader, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
         readerFooter = column(); readerFooter.setBackgroundColor(readerBg()); padding(readerFooter, 16, 8); progressLabel = text("", 14, MUTED); readerFooter.addView(progressLabel);
         LinearLayout navigation = row(); navigation.addView(readerButton("上一章", () -> chapterStep(-1)));
         progress = new SeekBar(this); progress.setMax(1000); progress.setContentDescription("阅读进度"); weighted(navigation, progress);
         navigation.addView(readerButton("下一章", () -> chapterStep(1))); readerFooter.addView(navigation);
-        LinearLayout actions = row(); weighted(actions, readerAction("目录", "catalog", this::catalog)); weighted(actions, readerAction("书签", "bookmark", this::marks));
+        LinearLayout actions = row(); weighted(actions, readerAction("目录", "catalog", this::catalog));
         weighted(actions, readerAction("日 / 夜", "moon", () -> { capture(); set(lib.prefs(), "customBackground", false); applyBackground(readerBg() == 0xff20231f ? "#f7f3e8" : "#20231f"); }));
         weighted(actions, readerAction("设置", "settings", this::settings)); readerFooter.addView(actions);
         FrameLayout.LayoutParams footerParams = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM); footerParams.bottomMargin = readerBottomInset; surface.addView(readerFooter, footerParams);
         quietHeader = row(); padding(quietHeader, 8, 0); quietHeader.setBackgroundColor(readerBg());
-        Button exit = readerButton("‹", this::back); exit.setContentDescription("返回书架"); quietHeader.addView(exit);
-        quietTitle = text("", 13, readerInk()); quietTitle.setAlpha(.65f); quietTitle.setSingleLine(true); quietTitle.setEllipsize(TextUtils.TruncateAt.END); weighted(quietHeader, quietTitle);
+        quietHeader.addView(readerIconButton("back", "返回书架", this::back), new LinearLayout.LayoutParams(dp(48), dp(48)));
+        quietTitle = text("", 16, readerInk()); quietTitle.setAlpha(.75f); quietTitle.setSingleLine(true); quietTitle.setEllipsize(TextUtils.TruncateAt.END); weighted(quietHeader, quietTitle);
         surface.addView(quietHeader, new FrameLayout.LayoutParams(-1, dp(48), Gravity.TOP));
         quietFooter = row(); padding(quietFooter, 24, 0); quietFooter.setBackgroundColor(readerBg());
-        quietProgress = text("", 12, readerInk()); quietProgress.setAlpha(.65f); weighted(quietFooter, quietProgress);
-        deviceStatus = text("", 12, readerInk()); deviceStatus.setAlpha(.65f); quietFooter.addView(deviceStatus); updateDeviceStatus();
-        FrameLayout.LayoutParams quietParams = new FrameLayout.LayoutParams(-1, dp(24), Gravity.BOTTOM); quietParams.bottomMargin = dp(4); surface.addView(quietFooter, quietParams);
+        quietProgress = text("", 14, readerInk()); quietProgress.setAlpha(.75f); quietProgress.setSingleLine(true); quietProgress.setEllipsize(TextUtils.TruncateAt.END); weighted(quietFooter, quietProgress);
+        deviceStatus = text("", 14, readerInk()); deviceStatus.setAlpha(.75f); deviceStatus.setSingleLine(true); quietFooter.addView(deviceStatus); updateDeviceStatus();
+        FrameLayout.LayoutParams quietParams = new FrameLayout.LayoutParams(-1, dp(28), Gravity.BOTTOM); quietParams.bottomMargin = dp(4); surface.addView(quietFooter, quietParams);
         showControls(controlsVisible);
         progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onProgressChanged(SeekBar s, int p, boolean fromUser) {} public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) { jump((int) ((long) s.getProgress() * Math.max(0, source.length() - 1) / 1000)); persist(); } });
         jump(offset);
@@ -404,7 +409,6 @@ public final class NativeActivity extends Activity {
     }
     private void turnPage(int direction) {
         if (current != null && isPagedMode() && pagedReader != null) {
-            if (pagedReader.animating()) return;
             boolean canMove = pagedReader.canTurnPage(direction) || (direction > 0 ? chapter + 1 < chapters.size() : chapter > 0);
             if (!positioning && !importing && canMove && pagedReader.ready() && lib.prefs().optString("pageAnimation", "slide").equals("slide")) {
                 pagedReader.slide(direction, () -> turnPageNow(direction)); return;
@@ -471,41 +475,58 @@ public final class NativeActivity extends Activity {
         ChapterTree tree = new ChapterTree(chapters);
         collapsedChapters.clear(); collapsedChapters.addAll(tree.collapsedOutsidePath(chapter));
         List<Integer> indices = new ArrayList<>();
+        Runnable fit = () -> {
+            ViewGroup.LayoutParams params = entries.getLayoutParams();
+            params.height = dp(Math.min(getResources().getConfiguration().screenHeightDp / 2, Math.max(1, indices.size()) * 56)); entries.setLayoutParams(params);
+        };
         BaseAdapter adapter = new BaseAdapter() {
             public int getCount() { return indices.size(); }
             public Object getItem(int position) { return indices.get(position); }
             public long getItemId(int position) { return indices.get(position); }
             public View getView(int position, View recycled, ViewGroup parent) {
                 int index = indices.get(position); LinearLayout item = row();
-                item.setPadding(dp(Math.min(4, tree.depth[index]) * 16), 0, 0, 0);
+                item.setPadding(dp(Math.min(4, tree.depth[index]) * 8), 0, dp(4), 0);
+                item.setSelected(index == chapter); item.setBackground(shape(index == chapter ? 0xffd5dfcf : Color.TRANSPARENT, 8));
                 if (tree.branch[index]) {
                     Button toggle = button(collapsedChapters.contains(index) && search.length() == 0 ? "▸" : "▾", false, () -> {
                         int first = entries.getFirstVisiblePosition(); View top = entries.getChildAt(0); int y = top == null ? 0 : top.getTop();
                         if (!collapsedChapters.remove(index)) collapsedChapters.add(index);
-                        indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); notifyDataSetChanged(); entries.setSelectionFromTop(first, y);
+                        indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); notifyDataSetChanged(); fit.run(); entries.setSelectionFromTop(first, y);
                     });
                     toggle.setContentDescription((collapsedChapters.contains(index) ? "展开" : "收起") + chapters.get(index).title);
-                    item.addView(toggle, new LinearLayout.LayoutParams(dp(44), dp(48)));
-                } else item.addView(new View(NativeActivity.this), new LinearLayout.LayoutParams(dp(44), 1));
-                TextView label = text((index == chapter ? "● " : "") + chapters.get(index).title, 16, index == chapter ? ACCENT : INK);
+                    padding(toggle, 0, 0); item.addView(toggle, new LinearLayout.LayoutParams(dp(32), dp(48)));
+                } else item.addView(new View(NativeActivity.this), new LinearLayout.LayoutParams(dp(32), 1));
+                TextView label = text(chapters.get(index).title, 16, index == chapter ? 0xff2f412c : INK);
+                label.setTypeface(null, index == chapter ? Typeface.BOLD : Typeface.NORMAL);
+                label.setContentDescription(chapters.get(index).title + (index == chapter ? "，当前章节" : ""));
+                label.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+                    @Override public void onInitializeAccessibilityNodeInfo(View host, android.view.accessibility.AccessibilityNodeInfo info) {
+                        super.onInitializeAccessibilityNodeInfo(host, info); info.setSelected(index == chapter);
+                    }
+                });
                 padding(label, 4, 12); label.setMinHeight(dp(48)); weighted(item, label);
-                label.setOnClickListener(v -> { jump(chapters.get(index).start); persist(); d.dismiss(); });
+                label.setOnClickListener(v -> { jump(chapters.get(index).start); persist(); notifyDataSetChanged(); });
                 return item;
             }
         };
         entries.setAdapter(adapter);
-        Runnable render = () -> { indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); adapter.notifyDataSetChanged(); };
+        Runnable render = () -> { indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); adapter.notifyDataSetChanged(); fit.run(); };
         LinearLayout tools = row(); weighted(tools, button("全部展开", false, () -> { collapsedChapters.clear(); render.run(); }));
         weighted(tools, button("全部收起", false, () -> { for (int i = 0; i < tree.branch.length; i++) if (tree.branch[i]) collapsedChapters.add(i); render.run(); })); body.addView(tools, 1);
         search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int a, int c, int f) {} public void onTextChanged(CharSequence s, int a, int b, int c) { render.run(); } public void afterTextChanged(Editable e) {} }); render.run();
         entries.setSelection(Math.max(0, indices.indexOf(chapter)));
+        body.addView(button("返回阅读", false, d::dismiss));
     }
     private JSONArray bookmarks() { JSONArray marks = current.optJSONArray("marks"); if (marks == null) { marks = new JSONArray(); set(current, "marks", marks); } return marks; }
     private void addMark() { capture(); JSONArray marks = bookmarks(); for (int i = 0; i < marks.length(); i++) if (Math.abs(marks.optJSONObject(i).optInt("offset") - current.optInt("position")) < 80) { toast("这个位置已经有书签"); return; } marks.put(json("offset", current.optInt("position"), "title", chapters.get(chapter).title, "date", System.currentTimeMillis())); persist(); toast("已添加书签"); }
     private void marks() {
-        LinearLayout body = column(); Dialog d = sheet("我的书签", body); JSONArray marks = bookmarks();
-        if (marks.length() == 0) body.addView(text("还没有书签，点击阅读页右上角记下此刻。", 12, MUTED));
-        for (int i = 0; i < marks.length(); i++) { int index = i; JSONObject mark = marks.optJSONObject(i); LinearLayout r = row(); weighted(r, button(mark.optString("title") + " · " + (int) (100L * mark.optInt("offset") / Math.max(1, source.length())) + "%", false, () -> { jump(mark.optInt("offset")); persist(); d.dismiss(); })); r.addView(button("×", false, () -> { marks.remove(index); persist(); d.dismiss(); marks(); })); body.addView(r); }
+        capture(); LinearLayout body = column(); Dialog d = sheet("我的书签", body); LinearLayout entries = column();
+        body.addView(button("添加当前位置书签", false, () -> { addMark(); renderMarks(entries, d); })); body.addView(entries); renderMarks(entries, d);
+    }
+    private void renderMarks(LinearLayout body, Dialog dialog) {
+        body.removeAllViews(); JSONArray marks = bookmarks();
+        if (marks.length() == 0) body.addView(text("还没有书签", 15, MUTED));
+        for (int i = 0; i < marks.length(); i++) { int index = i; JSONObject mark = marks.optJSONObject(i); LinearLayout r = row(); weighted(r, button(mark.optString("title") + " · " + (int) (100L * mark.optInt("offset") / Math.max(1, source.length())) + "%", false, () -> { jump(mark.optInt("offset")); persist(); dialog.dismiss(); })); Button remove = button("×", false, () -> { marks.remove(index); persist(); renderMarks(body, dialog); }); remove.setContentDescription("删除书签" + mark.optString("title")); r.addView(remove); body.addView(r); }
     }
     private void settings() {
         capture(); LinearLayout body = column(); Dialog d = sheet("阅读设置", body); d.setOnDismissListener(dialog -> body.clearFocus());
@@ -554,6 +575,7 @@ public final class NativeActivity extends Activity {
     }
     private String formatNumber(double value) { return value == Math.rint(value) ? String.valueOf((int) value) : String.format(Locale.ROOT, "%.1f", value); }
     private void colorViews(View view) {
+        if (view instanceof ImageView && ((ImageView) view).getDrawable() instanceof ReaderIcon) ((ReaderIcon) ((ImageView) view).getDrawable()).color(readerInk());
         if (view instanceof TextView) {
             TextView t = (TextView) view; t.setTextColor(readerInk());
             for (android.graphics.drawable.Drawable icon : t.getCompoundDrawables()) if (icon instanceof ReaderIcon) ((ReaderIcon) icon).color(readerInk());
@@ -727,7 +749,7 @@ public final class NativeActivity extends Activity {
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         int code = event.getKeyCode();
         if (current != null && !importing && getWindow().getDecorView().hasWindowFocus() && lib.prefs().optBoolean("volumeKeys", true) && (code == KeyEvent.KEYCODE_VOLUME_DOWN || code == KeyEvent.KEYCODE_VOLUME_UP)) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && (event.getRepeatCount() == 0 || event.getEventTime() - lastVolumeTurn > 150)) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && (event.getRepeatCount() == 0 || event.getEventTime() - lastVolumeTurn >= 80)) {
                 lastVolumeTurn = event.getEventTime(); turnPage(code == KeyEvent.KEYCODE_VOLUME_DOWN ? 1 : -1);
             }
             return true;

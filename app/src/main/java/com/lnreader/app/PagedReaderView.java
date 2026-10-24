@@ -82,16 +82,16 @@ final class PagedReaderView extends View {
         return true;
     }
     boolean canTurnPage(int direction) { return ready() && page + direction >= 0 && page + direction < starts.size(); }
-    boolean animating() { return animator != null && animator.isRunning(); }
     void slide(int direction, Runnable change) {
-        finishAnimation();
-        if (getWidth() <= 0 || getHeight() <= 0) { change.run(); return; }
-        // One viewport only, including across chapter boundaries; never snapshot the book.
-        try { previousPage = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888); }
-        catch (OutOfMemoryError error) { change.run(); return; }
-        draw(new Canvas(previousPage)); this.direction = direction; fraction = 0;
+        if (!ValueAnimator.areAnimatorsEnabled() || getWidth() <= 0 || getHeight() <= 0) { finishAnimation(); change.run(); return; }
+        // Only viewport snapshots, including chapter boundaries; never snapshot the book.
+        Bitmap snapshot;
+        try { snapshot = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888); }
+        catch (OutOfMemoryError error) { finishAnimation(); change.run(); return; }
+        // Capture the current moving frame before cancelling, so rapid input stays continuous.
+        draw(new Canvas(snapshot)); finishAnimation(); previousPage = snapshot; this.direction = direction; fraction = 0;
         change.run();
-        animator = ValueAnimator.ofFloat(0, 1); animator.setDuration(220);
+        animator = ValueAnimator.ofFloat(0, 1); animator.setDuration(140);
         animator.setInterpolator(new android.view.animation.DecelerateInterpolator());
         animator.addUpdateListener(value -> { fraction = (float) value.getAnimatedValue(); invalidate(); });
         animator.addListener(new android.animation.AnimatorListenerAdapter() {

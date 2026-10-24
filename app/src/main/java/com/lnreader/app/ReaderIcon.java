@@ -11,8 +11,8 @@ final class ReaderIcon extends Drawable {
     ReaderIcon(String kind, int color, float density) { this(kind, color, density, -1); }
     ReaderIcon(String kind, int color, float density, int level) {
         this.kind = kind; this.level = level;
-        width = Math.round((kind.equals("battery") ? 22 : 24) * density);
-        height = Math.round((kind.equals("battery") ? 12 : 24) * density);
+        width = Math.round(24 * density);
+        height = Math.round((kind.equals("battery") ? 14 : 24) * density);
         paint.setColor(color); paint.setStrokeWidth(1.7f); paint.setStrokeCap(Paint.Cap.ROUND); paint.setStrokeJoin(Paint.Join.ROUND);
     }
     void color(int color) { paint.setColor(color); invalidateSelf(); }
