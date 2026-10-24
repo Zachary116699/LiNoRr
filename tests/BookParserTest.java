@@ -20,6 +20,23 @@ public class BookParserTest {
         assert paths.collapsedOutsidePath(2).equals(Set.of(3, 5, 6));
         assert paths.visible(paths.collapsedOutsidePath(2), "").equals(Arrays.asList(0, 1, 2, 3, 5));
         assert paths.collapsedOutsidePath(0).contains(0); // Current branch itself stays collapsed.
+        assert paths.collapsedOutsidePath(-1).equals(Set.of(0, 1, 3, 5, 6));
+        for (String title : Arrays.asList("EP.1 开始", "EP. 002：继续", "ep3 - Return", "Episode 4: Arrival", "Chapter 5 Test", "CH.6 标题", "Chap. 7", "Section 8 标题", "Sec.9", "Part II", "Volume III", "Book 2", "Act IV", "Scene 3", "第一目 测试", "第２節 继续", "卷一 风起", "【EP.10 标题】")) {
+            List<BookParser.Chapter> recognized = BookParser.parse(title + "\n普通正文。\n"); assert recognized.size() == 1 : title; assert recognized.get(0).title.equals(title) : title;
+        }
+        assert BookParser.parse("没有目录的小说。\n普通正文。\n").isEmpty();
+        assert BookParser.parse("EP 只是正文中的缩写\nchapterhouse is a word\n").isEmpty();
+        String longEpisode = "EP.1 原始标题\n" + "原文内容。\n".repeat(20000);
+        assert BookParser.parse(longEpisode).size() == 1;
+        assert BookParser.sections(longEpisode, BookParser.parse(longEpisode)).stream().noneMatch(c -> c.title.contains("续"));
+        String spaced = "\n\nEP.1 标题\n\n\n正文甲\n　　已有缩进\n\n正文乙\n";
+        DisplayText display = new DisplayText(spaced, 0, spaced.length());
+        assert display.text.equals("EP.1 标题\n正文甲\n　　已有缩进\n正文乙\n");
+        for (int i = 0; i < display.text.length(); i++) { assert display.text.charAt(i) == spaced.charAt(display.sourceOffset(i)); assert display.displayOffset(display.sourceOffset(i)) == i; }
+        assert spaced.startsWith("\n\n") && spaced.contains("\n\n\n");
+        Path temporary = Files.createTempDirectory("lnreader-backup-test");
+        try { byte[] original = {(byte) 0xff, (byte) 0xfe, 0x2d, 0x4e, 13, 0, 10, 0}; Path from = temporary.resolve("源.txt"), to = temporary.resolve("book/无分类/原名.txt"); Files.write(from, original); BackupFiles.copy(from.toFile(), to.toFile()); assert Arrays.equals(original, Files.readAllBytes(to)); assert BackupFiles.name("../a:b/c").equals(".._a_b_c"); boolean denied = false; try { BackupFiles.child(temporary.toFile(), "../outside"); } catch (java.io.IOException e) { denied = true; } assert denied; }
+        finally { try (var files = Files.walk(temporary)) { files.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} }); } }
         verify(source);
         verify("第一章 大章节\n" + "字".repeat(100000));
         verify("字".repeat(100000));
@@ -53,7 +70,7 @@ public class BookParserTest {
     }
     private static void verify(String source) {
         StringBuilder rebuilt = new StringBuilder();
-        for (BookParser.Chapter c : BookParser.parse(source)) { assert c.end - c.start <= 30000; rebuilt.append(source, c.start, c.end); }
+        for (BookParser.Chapter c : BookParser.sections(source, BookParser.parse(source))) { assert c.end - c.start <= 24000; rebuilt.append(source, c.start, c.end); }
         assert rebuilt.toString().equals(source);
     }
 }

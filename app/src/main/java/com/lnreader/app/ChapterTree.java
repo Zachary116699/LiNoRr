@@ -22,7 +22,7 @@ final class ChapterTree {
     Set<Integer> collapsedOutsidePath(int current) {
         Set<Integer> collapsed = new HashSet<>();
         for (int i = 0; i < branch.length; i++) if (branch[i]) collapsed.add(i);
-        for (int p = parent[current]; p >= 0; p = parent[p]) collapsed.remove(p);
+        for (int p = current >= 0 && current < parent.length ? parent[current] : -1; p >= 0; p = parent[p]) collapsed.remove(p);
         return collapsed;
     }
     List<Integer> visible(Set<Integer> collapsed, String query) {

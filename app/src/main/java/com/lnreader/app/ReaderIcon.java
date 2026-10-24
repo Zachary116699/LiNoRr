@@ -22,6 +22,11 @@ final class ReaderIcon extends Drawable {
         paint.setStyle(Paint.Style.STROKE);
         Path p = new Path();
         switch (kind) {
+            case "sun":
+                canvas.drawCircle(12, 12, 4, paint);
+                for (int i = 0; i < 8; i++) { double angle = Math.PI * i / 4; canvas.drawLine(12 + (float) Math.cos(angle) * 8, 12 + (float) Math.sin(angle) * 8, 12 + (float) Math.cos(angle) * 11, 12 + (float) Math.sin(angle) * 11, paint); } break;
+            case "more":
+                paint.setStyle(Paint.Style.FILL); for (int y = 5; y <= 19; y += 7) canvas.drawCircle(12, y, 1.6f, paint); break;
             case "catalog":
                 canvas.drawRoundRect(4, 2, 20, 22, 3, 3, paint);
                 for (int y = 7; y <= 17; y += 5) canvas.drawLine(8, y, 16, y, paint);
