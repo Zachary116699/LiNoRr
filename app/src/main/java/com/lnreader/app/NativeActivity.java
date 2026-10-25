@@ -54,7 +54,6 @@ public final class NativeActivity extends Activity {
     private JSONObject coverTarget;
     private Runnable storageAction;
     private boolean waitingStorage;
-    private boolean waitingPhotosSettings;
     private int chapter, bodyOffset, pagePrefix, searchToken;
     private boolean list, importing, positioning, controlsVisible, endReached;
     private int pageNumber = 1, pageCount = 1;
@@ -187,7 +186,7 @@ public final class NativeActivity extends Activity {
     private void organizeAndRefresh() { if (lib.canWrite()) migrateBackup(this::showShelf); else { persist(); showShelf(); } }
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results); if (request == STORAGE) completeStorageRequest();
-        if (request == PHOTOS && coverTarget != null) { if (canReadPhotos()) openCoverGallery(coverTarget); else photoPermissionHelp(coverTarget); }
+        if (request == PHOTOS && coverTarget != null) { JSONObject book = coverTarget; coverTarget = null; if (canReadPhotos()) openCoverGallery(book); else toast("未获得照片访问权限，可再次点击导入封面申请授权"); }
     }
     private void completeStorageRequest() {
         if (!waitingStorage) return; waitingStorage = false; Runnable action = storageAction; storageAction = null;
@@ -259,9 +258,10 @@ public final class NativeActivity extends Activity {
         for (int i = 0; i < keys.length; i++) { RadioButton choice = new RadioButton(this); choice.setId(View.generateViewId()); choice.setText(labels[i]); choice.setTextSize(16); fields.addView(choice); options.put(choice.getId(), keys[i]); if (key.equals(keys[i])) fields.check(choice.getId()); }
         fields.setOnCheckedChangeListener((group, id) -> { set(view, "sort", options.get(id)); persist(); changeShelfPage(0); });
         gap(body, 8); body.addView(text("排序方式", 16, uiMuted())); RadioGroup order = new RadioGroup(this); order.setOrientation(LinearLayout.HORIZONTAL); body.addView(order);
-        RadioButton ascending = new RadioButton(this), descending = new RadioButton(this); ascending.setId(View.generateViewId()); descending.setId(View.generateViewId()); ascending.setText("升序"); descending.setText("降序"); order.addView(ascending); order.addView(descending); order.check(view.optBoolean("ascending", false) ? ascending.getId() : descending.getId());
+        RadioButton ascending = new RadioButton(this), descending = new RadioButton(this); ascending.setId(View.generateViewId()); descending.setId(View.generateViewId()); ascending.setText("升序"); descending.setText("降序");
+        RadioGroup.LayoutParams ascSize = new RadioGroup.LayoutParams(0, dp(48), 1), descSize = new RadioGroup.LayoutParams(0, dp(48), 1); ascSize.setMarginEnd(dp(16)); order.addView(ascending, ascSize); order.addView(descending, descSize); order.check(view.optBoolean("ascending", false) ? ascending.getId() : descending.getId());
         order.setOnCheckedChangeListener((group, id) -> { set(view, "ascending", id == ascending.getId()); persist(); changeShelfPage(0); });
-        body.addView(button("完成", true, dialog::dismiss));
+        gap(body, 16); body.addView(button("完成", true, dialog::dismiss));
     }
     private String shelfName(String id) { if (id.equals("recent")) return "最近阅读"; if (id.equals("all")) return "全部书籍"; for (JSONObject s : lib.shelves) if (id.equals(s.optString("id"))) return s.optString("name"); return "全部书籍"; }
     private void openDrawer() {
@@ -497,9 +497,12 @@ public final class NativeActivity extends Activity {
         EditText name = input("书籍名称", book.optString("title")); name.setContentDescription("书籍名称"); name.setSelectAllOnFocus(true); settingRow(body, "书籍名称", name);
         LinkedHashSet<String> memberships = new LinkedHashSet<>(Library.shelfIds(book)); body.addView(bookCategories(memberships)); gap(body, 8);
         Dialog dialog = sheet("书籍管理", body);
+        LinearLayout coverActions = row();
+        Button removeCover = button("删除封面", false, () -> ensureStorage(() -> { dialog.dismiss(); deleteCover(book); })); removeCover.setEnabled(book.optBoolean("cover") || lib.coverFile(book).isFile());
+        weighted(coverActions, removeCover);
+        weighted(coverActions, button("导入封面", false, () -> { dialog.dismiss(); ensureStorage(() -> chooseCover(book)); })); body.addView(coverActions);
+        body.addView(button("章节匹配设置", false, () -> { dialog.dismiss(); chapterSettings(book); })); gap(body, 4);
         body.addView(button("保存", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty()) return; set(book, "title", value.substring(0, Math.min(value.length(), 120))); Library.setShelfIds(book, memberships); dialog.dismiss(); organizeAndRefresh(); }));
-        body.addView(button("导入图片作为封面", false, () -> { dialog.dismiss(); ensureStorage(() -> chooseCover(book)); }));
-        body.addView(button("章节匹配设置", false, () -> { dialog.dismiss(); chapterSettings(book); }));
         body.addView(button("从书架移除", false, () -> { dialog.dismiss(); confirmRemove(Collections.singleton(book.optString("id"))); }));
     }
     private void infoRow(LinearLayout body, String label, String value) {
@@ -507,26 +510,27 @@ public final class NativeActivity extends Activity {
         line.addView(text(label, 14, uiMuted()), new LinearLayout.LayoutParams(dp(76), -2));
         TextView text = text(value.isEmpty() ? "—" : value, 14, uiMuted()); text.setGravity(Gravity.END); text.setTextIsSelectable(true); weighted(line, text); body.addView(line);
     }
-    private boolean allPhotosAllowed() { return checkSelfPermission(Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES : android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
+    private boolean allPhotosAllowed() { return Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager() || checkSelfPermission(Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES : android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
     private boolean canReadPhotos() { return allPhotosAllowed() || Build.VERSION.SDK_INT >= 34 && checkSelfPermission(android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
     private void chooseCover(JSONObject book) { coverTarget = book; if (canReadPhotos()) openCoverGallery(book); else requestCoverPhotos(book); }
     private void requestCoverPhotos(JSONObject book) {
+        if (allPhotosAllowed()) { openCoverGallery(book); return; }
         coverTarget = book;
         requestPermissions(Build.VERSION.SDK_INT >= 34 ? new String[]{android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED}
             : new String[]{Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES : android.Manifest.permission.READ_EXTERNAL_STORAGE}, PHOTOS);
     }
-    private void photoPermissionHelp(JSONObject book) {
-        LinearLayout body = column(); body.addView(text("允许访问所有照片后，即可浏览完整本地图集。", 16, uiInk())); Dialog dialog = sheet("照片权限", body);
-        body.addView(button("打开照片权限设置", true, () -> { dialog.dismiss(); openPhotoSettings(book); }));
-        body.addView(button("取消", false, () -> { coverTarget = null; dialog.dismiss(); }));
-    }
-    private void openPhotoSettings(JSONObject book) { coverTarget = book; waitingPhotosSettings = true; startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); }
     private void openCoverGallery(JSONObject book) {
-        coverTarget = book; Dialog[] dialog = {null};
+        coverTarget = null; Dialog[] dialog = {null};
         MediaGallery gallery = new MediaGallery(this, uiInk(), uiBg(), !allPhotosAllowed(), () -> { dialog[0].dismiss(); requestCoverPhotos(book); }, uri -> { dialog[0].dismiss(); saveCover(book, uri); });
         dialog[0] = sheet("选择封面", gallery);
-        sheetAction(dialog[0], "settings", "照片权限设置", () -> { dialog[0].dismiss(); openPhotoSettings(book); });
-        dialog[0].setOnDismissListener(v -> { gallery.close(); if (coverTarget == book) coverTarget = null; });
+        dialog[0].setOnDismissListener(v -> gallery.close());
+    }
+    private void deleteCover(JSONObject book) {
+        showBusy("正在删除封面…");
+        io.execute(() -> { try { File file = new File(lib.directory(book), "cover.jpg"); if (file.exists() && !file.delete()) throw new IOException("无法删除封面文件");
+            String id = book.optString("id"); if (id.matches("[a-f0-9]{24}")) { File legacy = new File(lib.root, id + ".jpg"); if (legacy.exists() && !legacy.delete()) throw new IOException("无法删除旧版封面文件"); }
+            runOnUiThread(() -> { set(book, "cover", false); coverCache.evictAll(); hideBusy(); persist(); showShelf(); bookEditor(book); });
+        } catch (Exception error) { runOnUiThread(this::hideBusy); toast("封面删除失败：" + error.getMessage()); } });
     }
     private void saveCover(JSONObject book, Uri image) {
         coverTarget = null; showBusy("正在压缩并备份封面…");
@@ -1211,7 +1215,6 @@ public final class NativeActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (lib != null && waitingStorage && Build.VERSION.SDK_INT >= 30) completeStorageRequest();
-        if (lib != null && waitingPhotosSettings) { waitingPhotosSettings = false; if (coverTarget != null && canReadPhotos()) openCoverGallery(coverTarget); else { coverTarget = null; toast("尚未获得照片访问权限"); } }
         if (!statusRegistered) {
             IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED); filter.addAction(Intent.ACTION_TIME_TICK); filter.addAction(Intent.ACTION_TIME_CHANGED); filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
             registerReceiver(statusReceiver, filter); statusRegistered = true;

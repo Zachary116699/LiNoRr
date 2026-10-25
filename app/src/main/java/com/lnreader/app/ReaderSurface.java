@@ -35,6 +35,7 @@ final class ReaderSurface extends FrameLayout {
             downX = event.getX(); downY = event.getY(); downAt = event.getEventTime(); moved = false; multiTouch = false; dragging = false; swiping = false;
             swipe.reset(downX);
             tracking = !inside(header, downX, downY) && !inside(footer, downX, downY);
+            if (tracking && paged) requestUnbufferedDispatch(event);
             atTop = scroll == null || !scroll.canScrollVertically(-1);
             atBottom = scroll == null || !scroll.canScrollVertically(1);
         }
@@ -47,11 +48,10 @@ final class ReaderSurface extends FrameLayout {
         if (swiping && multiTouch) { if (dragging) listener.endDrag(false); dragging = false; swiping = false; tracking = false; cancelChildren(event); return true; }
         if ((action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_UP) && paged && !multiTouch) {
             int previousDirection = swipe.direction();
-            if (swiping || event.getEventTime() - downAt < ViewConfiguration.getLongPressTimeout()) {
-                // Batched events can contain the outward arc even when the last sample curls back.
-                for (int i = 0; i < event.getHistorySize(); i++) swipe.move(event.getHistoricalX(i));
-                swipe.move(event.getX());
-            }
+            // Actual selection above owns a long press; elapsed time alone must not reject a swipe.
+            // Keep historical samples for devices that still batch input despite unbuffered dispatch.
+            for (int i = 0; i < event.getHistorySize(); i++) swipe.move(event.getHistoricalX(i));
+            swipe.move(event.getX());
             if (!swiping && swipe.direction() != 0) {
                 swiping = true; dragging = listener.beginDrag(swipe.direction()); cancelChildren(event);
             } else if (swiping && swipe.direction() != previousDirection) {

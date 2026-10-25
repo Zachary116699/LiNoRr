@@ -61,7 +61,7 @@ public class GestureChecks extends Instrumentation {
         try {
             check("LNReader_QA".equals(arguments.getString("guard")), "Dedicated QA guard required");
             NativeActivity activity = (NativeActivity) startActivitySync(new Intent(getTargetContext(), NativeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            if (arguments.containsKey("gallery")) { Thread.sleep(400); MediaChecks.run(this, activity, "partial".equals(arguments.getString("gallery"))); result.putString("stream", "PASS: native album browsing, scoped photo grants, thumbnail loading, album selection and compressed cover backup\n"); finish(Activity.RESULT_OK, result); return; }
+            if (arguments.containsKey("gallery")) { Thread.sleep(400); MediaChecks.run(this, activity, arguments.getString("gallery")); result.putString("stream", "partial".equals(arguments.getString("gallery")) ? "PASS: native album browsing, partial photo grants, thumbnails and cover selection\n" : "PASS: native album browsing, current photo grants, compact book actions, compressed cover backup and deletion\n"); finish(Activity.RESULT_OK, result); return; }
             if ("true".equals(arguments.getString("shelf"))) { Thread.sleep(400); shelfChecks(activity); result.putString("stream", "PASS: fixed-X shelf dragging, native drop reordering, custom shelf icon and metadata labels\n"); finish(Activity.RESULT_OK, result); return; }
             Thread.sleep(500); Library library = (Library) get(activity, "lib");
             String content = "第一章 起点\n" + "正文在这一行，检查平移时相邻页面的位置和取消后的阅读进度。\n".repeat(160) + "第二章 下一章\n章节边界后的正文。\n";
@@ -79,9 +79,9 @@ public class GestureChecks extends Instrumentation {
             float shortX = .8f - 32f / getTargetContext().getResources().getDisplayMetrics().widthPixels;
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, shortX, at, at + 100); touch(activity, MotionEvent.ACTION_UP, shortX, at, at + 500); Thread.sleep(180); check(book.optInt("position") > original, "Small intentional swipe still requires fixed travel"); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, original));
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .6f, at, at + 100);
-            for (int i = 1; i <= 20; i++) touch(activity, MotionEvent.ACTION_MOVE, .6f + i * .001f, at, at + 100 + i * 20);
-            touch(activity, MotionEvent.ACTION_UP, .62f, at, at + 700); Thread.sleep(180); check(book.optInt("position") == original, "Slow accumulated reversal was ignored");
-            at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .6f, at, at + 100); touch(activity, MotionEvent.ACTION_MOVE, .65f, at, at + 200); touch(activity, MotionEvent.ACTION_MOVE, .58f, at, at + 300); touch(activity, MotionEvent.ACTION_UP, .58f, at, at + 700); Thread.sleep(180); check(book.optInt("position") > original, "Resumed forward drag should commit"); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, original));
+            for (int i = 1; i <= 20; i++) touch(activity, MotionEvent.ACTION_MOVE, .6f + i * .003f, at, at + 100 + i * 20);
+            touch(activity, MotionEvent.ACTION_UP, .66f, at, at + 700); Thread.sleep(180); check(book.optInt("position") == original, "Slow accumulated reversal was ignored");
+            at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .6f, at, at + 100); touch(activity, MotionEvent.ACTION_MOVE, .67f, at, at + 200); touch(activity, MotionEvent.ACTION_MOVE, .58f, at, at + 300); touch(activity, MotionEvent.ACTION_UP, .58f, at, at + 700); Thread.sleep(180); check(book.optInt("position") > original, "Resumed forward drag should commit"); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, original));
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .3f, at, at + 100); touch(activity, MotionEvent.ACTION_UP, .3f, at, at + 400); Thread.sleep(180); check(book.optInt("position") > original, "Forward release did not commit");
             runOnMainSync(() -> { call(activity, "jump", new Class<?>[]{int.class}, content.indexOf("第二章") - 1); call(activity, "capture", new Class<?>[]{}); }); int previous = book.optInt("position");
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .3f, at, at + 100); touch(activity, MotionEvent.ACTION_CANCEL, .3f, at, at + 300); Thread.sleep(180); check(book.optInt("position") == previous, "System cancellation changed chapter");
@@ -110,6 +110,15 @@ public class GestureChecks extends Instrumentation {
             runOnMainSync(() -> { set(library.prefs(), "pageAnimation", "slide"); call(activity, "jump", new Class<?>[]{int.class}, 0); });
             at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, 540, 900, at, at); touchXY(activity, MotionEvent.ACTION_MOVE, 541, 970, at, at + 60); touchXY(activity, MotionEvent.ACTION_UP, 541, 970, at, at + 120); check(book.optInt("position") == original, "Vertical movement should not flip pages");
             float density = activity.getResources().getDisplayMetrics().density;
+            // Sparse fast flings, release-coordinate contraction and delayed/batched first movement.
+            for (String animation : new String[]{"slide", "none"}) for (int side : new int[]{-1, 1}) for (int duration : new int[]{12, 45, 120, 700}) {
+                runOnMainSync(() -> { set(library.prefs(), "pageAnimation", animation); call(activity, "jump", new Class<?>[]{int.class}, 0); if (side > 0) call(activity, "turnPageNow", new Class<?>[]{int.class}, 1); });
+                int before = book.optInt("position"); float x = side < 0 ? 850 : 200; at = SystemClock.uptimeMillis();
+                touchXY(activity, MotionEvent.ACTION_DOWN, x, 1000, at, at);
+                if (duration != 12) touchXY(activity, MotionEvent.ACTION_MOVE, x + side * 100 * density, 1060, at, at + duration - 5);
+                touchXY(activity, MotionEvent.ACTION_UP, x + side * 85 * density, 1080, at, at + duration);
+                check(side < 0 ? book.optInt("position") > before : book.optInt("position") < before, "Medium swipe lost: " + animation + "/" + side + "/" + duration); Thread.sleep(100);
+            }
             for (String animation : new String[]{"slide", "none"}) for (int side : new int[]{-1, 1}) for (int vertical : new int[]{-1, 1}) for (float length : new float[]{.6f, 1.8f, 5f}) {
                 runOnMainSync(() -> { set(library.prefs(), "pageAnimation", animation); call(activity, "showControls", new Class<?>[]{boolean.class}, true); call(activity, "jump", new Class<?>[]{int.class}, 0); if (side > 0) call(activity, "turnPageNow", new Class<?>[]{int.class}, 1); });
                 int before = book.optInt("position"); float startX = side < 0 ? 900 : 160; at = SystemClock.uptimeMillis();

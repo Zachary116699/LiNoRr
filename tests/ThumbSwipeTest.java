@@ -10,9 +10,10 @@ public class ThumbSwipeTest {
             gesture.reset(0); gesture.move(sign * .6f * density); assert gesture.commit(sign * .6f * density) : "Tiny swipe lost";
             gesture.reset(0); for (float x : new float[]{.1f, -.2f, .4f, -.1f}) gesture.move(x * density);
             assert gesture.direction() == 0 : "Tap jitter became a swipe";
-            gesture.reset(0); gesture.move(sign * 6 * density); gesture.move(sign * 1.5f * density);
-            assert !gesture.commit(sign * 1.5f * density) : "Deliberate return did not cancel";
-            gesture.move(sign * 6 * density); assert gesture.commit(sign * 6 * density) : "Resumed direction lost";
+            gesture.reset(0); gesture.move(sign * 100 * density); gesture.move(sign * 81 * density);
+            assert gesture.commit(sign * 81 * density) : "Sub-20dp release movement cancelled a swipe";
+            gesture.move(sign * 79 * density); assert !gesture.commit(sign * 79 * density) : "Deliberate return did not cancel";
+            gesture.move(sign * 100 * density); assert gesture.commit(sign * 100 * density) : "Resumed direction lost";
             gesture.reset(0); gesture.move(-sign * 2 * density); gesture.move(sign * 6 * density);
             assert gesture.direction() == -sign && gesture.commit(sign * 6 * density) : "Initial hook locked the wrong direction";
         }
