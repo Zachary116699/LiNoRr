@@ -22,6 +22,18 @@ final class ReaderIcon extends Drawable {
         paint.setStyle(Paint.Style.STROKE);
         Path p = new Path();
         switch (kind) {
+            case "shelf":
+                canvas.drawLine(2, 21, 22, 21, paint); canvas.drawRoundRect(3, 4, 8, 19, 1, 1, paint); canvas.drawRoundRect(10, 3, 14, 19, 1, 1, paint); p.moveTo(16, 5); p.lineTo(20, 4); p.lineTo(23, 18); p.lineTo(19, 19); p.close(); canvas.drawPath(p, paint); break;
+            case "grid":
+                for (int x = 3; x <= 13; x += 10) for (int y = 3; y <= 13; y += 10) canvas.drawRoundRect(x, y, x + 7, y + 7, 1, 1, paint); break;
+            case "list":
+                for (int y = 4; y <= 18; y += 7) { canvas.drawRoundRect(2, y, 6, y + 4, .5f, .5f, paint); canvas.drawLine(10, y + 2, 22, y + 2, paint); } break;
+            case "filter":
+                for (int y = 5; y <= 19; y += 7) { canvas.drawLine(3, y, 21, y, paint); canvas.drawCircle(y == 12 ? 16 : 8, y, 2, paint); } break;
+            case "sort":
+                canvas.drawLine(5, 3, 5, 21, paint); p.moveTo(2, 17); p.lineTo(5, 21); p.lineTo(8, 17); canvas.drawPath(p, paint); canvas.drawLine(11, 5, 22, 5, paint); canvas.drawLine(11, 12, 19, 12, paint); canvas.drawLine(11, 19, 16, 19, paint); break;
+            case "import":
+                p.moveTo(3, 15); p.lineTo(3, 21); p.lineTo(21, 21); p.lineTo(21, 15); canvas.drawPath(p, paint); canvas.drawLine(12, 2, 12, 15, paint); p.reset(); p.moveTo(7, 10); p.lineTo(12, 15); p.lineTo(17, 10); canvas.drawPath(p, paint); break;
             case "sun":
                 canvas.drawCircle(12, 12, 4, paint);
                 for (int i = 0; i < 8; i++) { double angle = Math.PI * i / 4; canvas.drawLine(12 + (float) Math.cos(angle) * 8, 12 + (float) Math.sin(angle) * 8, 12 + (float) Math.cos(angle) * 11, 12 + (float) Math.sin(angle) * 11, paint); } break;
