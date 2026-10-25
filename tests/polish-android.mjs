@@ -14,7 +14,7 @@ function nodes(){adb('shell','uiautomator','dump','/sdcard/polish-window.xml'); 
 function touch(n){assert.ok(n,'Missing node'); const b=n.bounds.match(/\d+/g).map(Number); adb('shell','input','tap',String((b[0]+b[2])>>1),String((b[1]+b[3])>>1));}
 async function tap(label){for(let i=0;i<5;i++){let all=nodes(),node=all.find(n=>n['content-desc']===label)||all.find(n=>n.text===label||n.text===label+' ✓');if(node){touch(node);await pause(400);return;}await pause(300);}throw Error('Missing control: '+label);}
 function state(){return JSON.parse(adb('exec-out','run-as','com.lnreader.app','cat','files/library/library.json'));}
-function shot(name){mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.13-'+name+'.png',adb('exec-out','screencap','-p'));}
+function shot(name){mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.14-'+name+'.png',adb('exec-out','screencap','-p'));}
 async function launch(){adb('shell','am','force-stop','com.lnreader.app');adb('shell','am','start','-n','com.lnreader.app/.NativeActivity');await pause(700);}
 async function shelf(name){await tap('打开书架抽屉');await tap(name);}
 const visibleTitles=()=>nodes().filter(n=>n['content-desc']?.endsWith('封面')).map(n=>n['content-desc'].slice(0,-2));
@@ -26,8 +26,8 @@ async function sort(label,order='升序'){await tap('书籍排序');await tap(la
 async function addShelf(name){await tap('打开书架抽屉');await tap('新增书架');await type('书架名称',name);await tap('保存书架');await waitFor(()=>state().shelves.some(s=>s.name===name));}
 async function removeShelf(name){await tap('打开书架抽屉');await tap('编辑书架');await tap('删除'+name);await tap('删除');await waitFor(()=>!state().shelves.some(s=>s.name===name));}
 if(!process.env.POLISH_TAIL){
-const gestures=adb('shell','am','instrument','-w','-e','guard','LNReader_QA','-e','gesture','true','com.lnreader.app.test/com.lnreader.app.StorageChecks').toString();assert.ok(!gestures.includes('FAIL:'),gestures);assert.match(gestures,/PASS: held/);console.log(gestures.trim());
-mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.13-drag-half.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/drag-half.png'));
+const gestures=adb('shell','am','instrument','-w','-e','guard','LNReader_QA','-e','gesture','true','com.lnreader.app.test/com.lnreader.app.StorageChecks').toString();assert.ok(!gestures.includes('FAIL:'),gestures);assert.match(gestures,/PASS: short and medium/);console.log(gestures.trim());
+mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.14-drag-half.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/drag-half.png'));
 await launch();
 assert.ok(!nodes().some(n=>n['content-desc']==='搜索书名或文件名'));
 assert.ok(nodes().some(n=>/本书$/.test(n.text)),'Book count stays visible when collapsed');
@@ -59,7 +59,7 @@ let categories=nodes(), box=categories.find(n=>n['content-desc']==='分类：Pol
 await tap('分类：PolishA');await tap('分类：PolishB');shot('book-categories');await tap('展开或收起所属分类');assert.ok(!nodes().some(n=>n['content-desc']==='分类：PolishA'));await reveal('保存');await tap('保存');
 const chosen=()=>state().books.find(b=>b.title==='QA700-010');await waitFor(()=>chosen().shelfIds?.length===2&&chosen().directory.startsWith('book/PolishA/'));const id=chosen().id;
 await shelf('PolishA');assert.ok(visibleTitles().includes('QA700-010'));await shelf('PolishB');assert.ok(visibleTitles().includes('QA700-010'));
-await tap('打开书架抽屉');await tap('编辑书架');await tap('重命名PolishA');await type('书架名称','PolishRenamed');await tap('保存书架');await waitFor(()=>chosen().directory.startsWith('book/PolishRenamed/'));
+await tap('打开书架抽屉');await tap('编辑书架');await tap('重命名PolishA');await type('书架改名输入框','PolishRenamed');await tap('确认重命名');await waitFor(()=>chosen().directory.startsWith('book/PolishRenamed/'));await tap('完成编辑');await tap('全部书籍');
 await removeShelf('PolishRenamed');await waitFor(()=>chosen().shelfIds.length===1&&chosen().directory.startsWith('book/PolishB/'));await removeShelf('PolishB');await waitFor(()=>chosen().shelfIds.length===0&&chosen().directory.startsWith('book/无分类/'));assert.equal(chosen().id,id);
 await shelf('全部书籍');await search('QA700-010');
 const readerBg=state().prefs.bg;await tap('书架设置');await reveal('青绿');await tap('青绿');assert.equal(nodes().filter(n=>['青绿','雾蓝','暖沙','藕粉','石墨','藤紫'].includes(n['content-desc'])).length,6);assert.ok(!nodes().some(n=>n.text==='自定义'));shot('six-ui-themes');await tap('雾蓝');await waitFor(()=>state().uiTheme==='blue');assert.equal(state().prefs.bg,readerBg,'UI theme must not modify reader background');shot('ui-blue');

@@ -62,6 +62,7 @@ public class GestureChecks extends Instrumentation {
             check("LNReader_QA".equals(arguments.getString("guard")), "Dedicated QA guard required");
             NativeActivity activity = (NativeActivity) startActivitySync(new Intent(getTargetContext(), NativeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             if (arguments.containsKey("gallery")) { Thread.sleep(400); MediaChecks.run(this, activity, arguments.getString("gallery")); result.putString("stream", "partial".equals(arguments.getString("gallery")) ? "PASS: native album browsing, partial photo grants, thumbnails and cover selection\n" : "PASS: native album browsing, current photo grants, compact book actions, compressed cover backup and deletion\n"); finish(Activity.RESULT_OK, result); return; }
+            if (arguments.containsKey("interaction")) { Thread.sleep(400); InteractionChecks.run(this, activity); result.putString("stream", "PASS: batch shelf removal, recent hiding and re-entry, import quick categories, inline rename and cancellation\n"); finish(Activity.RESULT_OK, result); return; }
             if ("true".equals(arguments.getString("shelf"))) { Thread.sleep(400); shelfChecks(activity); result.putString("stream", "PASS: fixed-X shelf dragging, native drop reordering, custom shelf icon and metadata labels\n"); finish(Activity.RESULT_OK, result); return; }
             Thread.sleep(500); Library library = (Library) get(activity, "lib");
             String content = "第一章 起点\n" + "正文在这一行，检查平移时相邻页面的位置和取消后的阅读进度。\n".repeat(160) + "第二章 下一章\n章节边界后的正文。\n";
@@ -120,7 +121,7 @@ public class GestureChecks extends Instrumentation {
                 check(side < 0 ? book.optInt("position") > before : book.optInt("position") < before, "Medium swipe lost: " + animation + "/" + side + "/" + duration); Thread.sleep(100);
             }
             for (String animation : new String[]{"slide", "none"}) for (int side : new int[]{-1, 1}) for (int vertical : new int[]{-1, 1}) for (float length : new float[]{.6f, 1.8f, 5f}) {
-                runOnMainSync(() -> { set(library.prefs(), "pageAnimation", animation); call(activity, "showControls", new Class<?>[]{boolean.class}, true); call(activity, "jump", new Class<?>[]{int.class}, 0); if (side > 0) call(activity, "turnPageNow", new Class<?>[]{int.class}, 1); });
+                runOnMainSync(() -> { set(library.prefs(), "pageAnimation", animation); call(activity, "showControls", new Class<?>[]{boolean.class}, false); call(activity, "jump", new Class<?>[]{int.class}, 0); if (side > 0) call(activity, "turnPageNow", new Class<?>[]{int.class}, 1); });
                 int before = book.optInt("position"); float startX = side < 0 ? 900 : 160; at = SystemClock.uptimeMillis();
                 touchXY(activity, MotionEvent.ACTION_DOWN, startX, 1000, at, at);
                 for (int i = 1; i <= 5; i++) touchXY(activity, MotionEvent.ACTION_MOVE, startX + side * length * density * i / 5, 1000 + vertical * 14 * density * i, at, at + i * 25);
@@ -144,12 +145,30 @@ public class GestureChecks extends Instrumentation {
             check(view.selectionActive() && !view.selectedText().equals(firstSelection), "Selection handle did not adjust text"); check(book.optInt("position") == original, "Dragging selection unexpectedly paged");
             Thread.sleep(150); Bitmap selectionImage = getUiAutomation().takeScreenshot(); try (OutputStream out = new FileOutputStream(new File(getTargetContext().getCacheDir(), "text-selection.png"))) { selectionImage.compress(Bitmap.CompressFormat.PNG, 100, out); } selectionImage.recycle();
             runOnMainSync(() -> { String selected = view.selectedText(); ActionMode mode = (ActionMode) get(view, "selectionMode"); check(mode != null && mode.getMenu().findItem(android.R.id.copy) != null, "Copy is missing from selection menu"); mode.getMenu().performIdentifierAction(android.R.id.copy, 0); ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE); check(clipboard.hasPrimaryClip() && selected.contentEquals(clipboard.getPrimaryClip().getItemAt(0).coerceToText(activity)), "Copied text does not match selected text"); check(!view.selectionActive(), "Copy did not dismiss selection"); });
+            for (String readingMode : new String[]{"paged", "scroll"}) {
+                runOnMainSync(() -> { set(library.prefs(), "readingMode", readingMode); call(activity, "buildReader", new Class<?>[]{int.class}, 0); call(activity, "showControls", new Class<?>[]{boolean.class}, false); }); waitForIdleSync(); Thread.sleep(150);
+                ReaderSurface surface = (ReaderSurface) get(activity, "readerSurface"); int position = book.optInt("position");
+                at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, surface.getWidth() * .94f, surface.getHeight() - 2, at, at); touchXY(activity, MotionEvent.ACTION_UP, surface.getWidth() * .94f, surface.getHeight() - 2, at, at + 40);
+                check((boolean) get(activity, "controlsVisible") && book.optInt("position") == position, "Bottom status or its lower gap did not open the menu: " + readingMode);
+                at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, 800, 900, at, at); touchXY(activity, MotionEvent.ACTION_MOVE, 300, 700, at, at + 30); touchXY(activity, MotionEvent.ACTION_UP, 300, 700, at, at + 60);
+                check((boolean) get(activity, "controlsVisible") && book.optInt("position") == position, "Menu body swipe changed the page or dismissed the menu");
+                runOnMainSync(() -> { activity.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN)); activity.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_DOWN)); });
+                check(book.optInt("position") == position, "Volume key paged behind the menu");
+                if (readingMode.equals("scroll")) check(((android.widget.ScrollView) get(activity, "readingScroll")).getScrollY() == 0, "Body scroll moved behind the menu");
+                at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, surface.getWidth() * .1f, 900, at, at); touchXY(activity, MotionEvent.ACTION_UP, surface.getWidth() * .1f, 900, at, at + 30);
+                check(!(boolean) get(activity, "controlsVisible") && book.optInt("position") == position, "Body tap did not only dismiss the menu");
+                for (float fraction : new float[]{.27f, .73f}) {
+                    at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, surface.getWidth() * fraction, 900, at, at); touchXY(activity, MotionEvent.ACTION_UP, surface.getWidth() * fraction, 900, at, at + 30);
+                    check((boolean) get(activity, "controlsVisible") && book.optInt("position") == position, "Expanded middle tap area still flipped: " + fraction); runOnMainSync(() -> call(activity, "showControls", new Class<?>[]{boolean.class}, false));
+                }
+            }
+            runOnMainSync(() -> { set(library.prefs(), "readingMode", "paged"); call(activity, "buildReader", new Class<?>[]{int.class}, 0); }); waitForIdleSync();
             runOnMainSync(() -> { call(activity, "catalog", new Class<?>[]{}); Map<Dialog,?> dialogs = (Map<Dialog,?>) get(activity, "dialogShells"); for (Dialog dialog : dialogs.keySet()) if (dialog.isShowing()) {
                 android.widget.EditText input = (android.widget.EditText) find(dialog.getWindow().getDecorView(), "搜索章节输入框");
                 android.widget.ListView entries = (android.widget.ListView) ((ViewGroup) input.getParent().getParent()).getChildAt(1); int before = entries.getAdapter().getCount(); input.setText("NoSuchChapter"); check(entries.getAdapter().getCount() == before, "Typing filtered the catalog");
                 find(dialog.getWindow().getDecorView(), "搜索章节").performClick(); check(entries.getAdapter().getCount() == 0, "Catalog search icon did not submit"); input.setText(""); check(entries.getAdapter().getCount() == 0, "Clearing auto-submitted the catalog"); input.onEditorAction(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH); check(entries.getAdapter().getCount() == before, "Catalog keyboard search did not submit"); dialog.dismiss(); break;
             } });
-            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: held half-page rendering, short diagonal trends in both animation modes, slow reversal, continuous paging, both chapter boundaries, long-press selection, handle adjustment and clipboard copy\n"); finish(Activity.RESULT_OK, result);
+            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: short and medium swipes, reversal, continuous paging, text selection, bottom menu taps, expanded middle area and menu paging/scroll/volume isolation\n"); finish(Activity.RESULT_OK, result);
         } catch (Throwable error) { result.putString("stream", "FAIL: " + android.util.Log.getStackTraceString(error)); finish(Activity.RESULT_CANCELED, result); }
         finally { if (fixture != null) fixture.delete(); }
     }

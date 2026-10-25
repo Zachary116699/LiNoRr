@@ -7,11 +7,13 @@ import android.widget.ScrollView;
 
 /** Tap zones leave visible controls and long-press text selection alone. */
 final class ReaderSurface extends FrameLayout {
-    interface Listener { void tap(float fraction); void turn(int direction); default boolean beginDrag(int direction) { return false; } default void drag(float pixels) {} default void endDrag(boolean commit) {} default boolean selecting() { return false; } }
+    interface Listener { void tap(float fraction); void turn(int direction); default boolean beginDrag(int direction) { return false; } default void drag(float pixels) {} default void endDrag(boolean commit) {} default boolean selecting() { return false; } default boolean menuVisible() { return false; } }
     private final Listener listener;
     private final boolean paged;
     private final int slop;
     private View header, footer;
+    private View menuArea;
+    private boolean menuTouch, statusTouch;
     private ScrollView scroll;
     private float downX, downY;
     private long downAt;
@@ -26,6 +28,7 @@ final class ReaderSurface extends FrameLayout {
         swipe = new ThumbSwipe(getResources().getDisplayMetrics().density);
     }
     void overlays(View header, View footer) { this.header = header; this.footer = footer; }
+    void menuArea(View area) { menuArea = area; }
     void scrollChild(ScrollView child) { scroll = child; }
     private boolean inside(View v, float x, float y) { return v != null && v.getVisibility() == VISIBLE && x >= v.getLeft() && x <= v.getRight() && y >= v.getTop() && y <= v.getBottom(); }
     private void cancelChildren(MotionEvent event) { MotionEvent cancel = MotionEvent.obtain(event); cancel.setAction(MotionEvent.ACTION_CANCEL); super.dispatchTouchEvent(cancel); cancel.recycle(); }
@@ -35,11 +38,19 @@ final class ReaderSurface extends FrameLayout {
             downX = event.getX(); downY = event.getY(); downAt = event.getEventTime(); moved = false; multiTouch = false; dragging = false; swiping = false;
             swipe.reset(downX);
             tracking = !inside(header, downX, downY) && !inside(footer, downX, downY);
+            menuTouch = tracking && listener.menuVisible();
+            statusTouch = tracking && !menuTouch && menuArea != null && menuArea.getVisibility() == VISIBLE && downY >= menuArea.getTop();
             if (tracking && paged) requestUnbufferedDispatch(event);
             atTop = scroll == null || !scroll.canScrollVertically(-1);
             atBottom = scroll == null || !scroll.canScrollVertically(1);
         }
         if (!tracking) return super.dispatchTouchEvent(event);
+        if (menuTouch || statusTouch) {
+            if (event.getPointerCount() > 1 || Math.abs(event.getX() - downX) > slop || Math.abs(event.getY() - downY) > slop) moved = true;
+            if (action == MotionEvent.ACTION_UP) { tracking = false; if (!moved) listener.tap(.5f); }
+            if (action == MotionEvent.ACTION_CANCEL) tracking = false;
+            return true;
+        }
         if (listener.selecting()) { tracking = false; return super.dispatchTouchEvent(event); }
         if (event.getPointerCount() > 1) multiTouch = true;
         if (action == MotionEvent.ACTION_CANCEL) { if (dragging) listener.endDrag(false); dragging = false; swiping = false; tracking = false; return super.dispatchTouchEvent(event); }

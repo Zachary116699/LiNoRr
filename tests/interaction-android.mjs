@@ -1,0 +1,14 @@
+import {execFileSync} from 'node:child_process';
+import {mkdirSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import assert from 'node:assert/strict';
+const bin=join(process.env.ANDROID_HOME,'platform-tools/adb');
+const serial=execFileSync(bin,['devices']).toString().match(/emulator-\d+/)?.[0];assert.ok(serial);
+const adb=(...args)=>execFileSync(bin,['-s',serial,...args],{timeout:90000,maxBuffer:16e6});
+assert.match(adb('emu','avd','name').toString(),/^LNReader_QA/,'Use a dedicated QA emulator; no physical devices.');
+adb('shell','am','force-stop','com.lnreader.app');adb('shell','pm','clear','com.lnreader.app');
+adb('shell','appops','set','--uid','com.lnreader.app','MANAGE_EXTERNAL_STORAGE','allow');
+const result=adb('shell','am','instrument','-w','-e','guard','LNReader_QA','-e','gesture','true','-e','interaction','true','com.lnreader.app.test/com.lnreader.app.StorageChecks').toString();
+assert.match(result,/PASS: batch shelf removal/,result);console.log(result.trim());
+mkdirSync('artifacts',{recursive:true});for(const name of ['batch-controls','import-categories','inline-rename'])writeFileSync('artifacts/android-0.9.14-'+name+'.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/'+name+'.png'));
+adb('shell','am','force-stop','com.lnreader.app');adb('shell','pm','clear','com.lnreader.app');

@@ -6,6 +6,8 @@ import android.widget.*;
 
 /** Track gestures even when the child ScrollView consumes its moves. */
 final class ShelfSurface extends FrameLayout {
+    interface TouchGuard { boolean intercept(MotionEvent event); }
+    private TouchGuard guard;
     private final Runnable open;
     private final int direction;
     private float x, y;
@@ -17,6 +19,7 @@ final class ShelfSurface extends FrameLayout {
     ShelfSurface(Context context, Runnable open) { this(context, open, 1); }
     ShelfSurface(Context context, Runnable open, int direction) { super(context); this.open = open; this.direction = direction; }
     void scrollChild(ScrollView view) { scroll = view; }
+    void touchGuard(TouchGuard value) { guard = value; }
     private void release() { if (velocity != null) { velocity.recycle(); velocity = null; } }
     private boolean editing(View view, float x, float y) {
         if (view.getVisibility() != VISIBLE) return false;
@@ -25,6 +28,7 @@ final class ShelfSurface extends FrameLayout {
         return false;
     }
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if (guard != null && guard.intercept(event)) return true;
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) { release(); x = event.getX(); y = event.getY(); multiTouch = false; moved = false; scrollStart = scroll == null ? 0 : scroll.getScrollY(); tracking = !editing(this, x, y); if (tracking) velocity = VelocityTracker.obtain(); }
         if (velocity != null) velocity.addMovement(event);

@@ -26,7 +26,7 @@ final class MediaChecks {
         if (mode.equals("full")) test.getUiAutomation().grantRuntimePermission(activity.getPackageName(), android.Manifest.permission.READ_MEDIA_IMAGES);
         List<Uri> created = new ArrayList<>(); Library library = (Library) field(activity, "lib");
         File originalBackup = library.backup; boolean scoped = !mode.equals("allfiles"); if (scoped) library.backup = new File(activity.getCacheDir(), "scoped-media-qa");
-        JSONObject book = json("id", "dddddddddddddddddddddddd", "title", "Media QA", "directory", "book/.qa-cover-0.9.13"); File directory = library.directory(book); BackupFiles.mkdir(directory); File legacyCover = new File(library.root, book.optString("id") + ".jpg");
+        JSONObject book = json("id", "dddddddddddddddddddddddd", "title", "Media QA", "directory", "book/.qa-cover-0.9.14"); File directory = library.directory(book); BackupFiles.mkdir(directory); File legacyCover = new File(library.root, book.optString("id") + ".jpg");
         try {
             for (int i = 0; i < 2; i++) {
                 ContentValues values = new ContentValues(); values.put(MediaStore.Images.Media.DISPLAY_NAME, "LNReader_QA_" + i + ".jpg"); values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg"); values.put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/LNReader_QA_Album_" + i); values.put(MediaStore.Images.Media.IS_PENDING, 1);
