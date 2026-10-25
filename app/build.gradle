@@ -7,8 +7,8 @@ android {
         applicationId 'com.lnreader.app'
         minSdk 26
         targetSdk 35
-        versionCode 10
-        versionName '0.9.9'
+        versionCode 11
+        versionName '0.9.10'
         testInstrumentationRunner 'com.lnreader.app.StorageChecks'
     }
     compileOptions {

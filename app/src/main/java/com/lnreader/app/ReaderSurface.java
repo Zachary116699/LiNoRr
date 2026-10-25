@@ -7,7 +7,7 @@ import android.widget.ScrollView;
 
 /** Tap zones leave visible controls and long-press text selection alone. */
 final class ReaderSurface extends FrameLayout {
-    interface Listener { void tap(float fraction); void turn(int direction); default boolean beginDrag(int direction) { return false; } default void drag(float pixels) {} default void endDrag(boolean commit) {} }
+    interface Listener { void tap(float fraction); void turn(int direction); default boolean beginDrag(int direction) { return false; } default void drag(float pixels) {} default void endDrag(boolean commit) {} default boolean selecting() { return false; } }
     private final Listener listener;
     private final boolean paged;
     private final int slop;
@@ -17,18 +17,15 @@ final class ReaderSurface extends FrameLayout {
     private long downAt;
     private boolean tracking, moved, atTop, atBottom;
     private boolean multiTouch;
-    private boolean dragging;
+    private boolean dragging, swiping;
     private int dragDirection;
     private float dragPrevious;
     private boolean returning;
     private void trackDirection(float distance) {
-        float hysteresis = Math.max(2, slop * .25f);
+        float hysteresis = getResources().getDisplayMetrics().density;
         if (returning) { if (distance > dragPrevious + hysteresis) { returning = false; dragPrevious = distance; } else dragPrevious = Math.min(dragPrevious, distance); }
         else { if (distance < dragPrevious - hysteresis) { returning = true; dragPrevious = distance; } else dragPrevious = Math.max(dragPrevious, distance); }
     }
-    private VelocityTracker velocity;
-    private void releaseVelocity() { if (velocity != null) { velocity.recycle(); velocity = null; } }
-    @Override protected void onDetachedFromWindow() { releaseVelocity(); super.onDetachedFromWindow(); }
     public ReaderSurface(Context context) { this(context, true, new Listener() { public void tap(float fraction) {} public void turn(int direction) {} }); }
     ReaderSurface(Context context, boolean paged, Listener listener) {
         super(context); this.paged = paged; this.listener = listener;
@@ -41,44 +38,39 @@ final class ReaderSurface extends FrameLayout {
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
-            downX = event.getX(); downY = event.getY(); downAt = event.getEventTime(); moved = false; multiTouch = false; dragging = false;
-            releaseVelocity(); velocity = VelocityTracker.obtain();
+            downX = event.getX(); downY = event.getY(); downAt = event.getEventTime(); moved = false; multiTouch = false; dragging = false; swiping = false;
             tracking = !inside(header, downX, downY) && !inside(footer, downX, downY);
             atTop = scroll == null || !scroll.canScrollVertically(-1);
             atBottom = scroll == null || !scroll.canScrollVertically(1);
         }
-        if (!tracking) { releaseVelocity(); return super.dispatchTouchEvent(event); }
-        if (velocity != null) velocity.addMovement(event);
+        if (!tracking) return super.dispatchTouchEvent(event);
+        if (listener.selecting()) { tracking = false; return super.dispatchTouchEvent(event); }
         if (event.getPointerCount() > 1) multiTouch = true;
-        if (action == MotionEvent.ACTION_CANCEL) { if (dragging) listener.endDrag(false); dragging = false; releaseVelocity(); tracking = false; return super.dispatchTouchEvent(event); }
+        if (action == MotionEvent.ACTION_CANCEL) { if (dragging) listener.endDrag(false); dragging = false; swiping = false; tracking = false; return super.dispatchTouchEvent(event); }
         float dx = event.getX() - downX, dy = event.getY() - downY;
         if (Math.abs(dx) > slop || Math.abs(dy) > slop || event.getPointerCount() > 1) moved = true;
-        if (dragging && multiTouch) { listener.endDrag(false); dragging = false; tracking = false; cancelChildren(event); return true; }
-        if (action == MotionEvent.ACTION_MOVE && paged && !multiTouch) {
-            if (!dragging && Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy) * 1.1f) {
-                dragDirection = dx < 0 ? 1 : -1; dragging = listener.beginDrag(dragDirection); dragPrevious = Math.max(0, -dragDirection * dx); returning = false; if (dragging) cancelChildren(event);
+        if (swiping && multiTouch) { if (dragging) listener.endDrag(false); dragging = false; swiping = false; tracking = false; cancelChildren(event); return true; }
+        if ((action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_UP) && paged && !multiTouch) {
+            // A small noise floor distinguishes a swipe from a tap; diagonal motion is welcome.
+            float noise = 2 * getResources().getDisplayMetrics().density;
+            if (!swiping && event.getEventTime() - downAt < ViewConfiguration.getLongPressTimeout() && Math.abs(dx) > noise && Math.abs(dx) >= Math.abs(dy) * .35f) {
+                dragDirection = dx < 0 ? 1 : -1; swiping = true; dragging = listener.beginDrag(dragDirection); dragPrevious = -dragDirection * dx; returning = false; cancelChildren(event);
             }
-            if (dragging) { float distance = -dragDirection * dx; trackDirection(distance); listener.drag(Math.max(0, distance)); return true; }
+            if (swiping) { float distance = -dragDirection * dx; trackDirection(distance); if (dragging) listener.drag(Math.max(0, distance)); if (action == MotionEvent.ACTION_MOVE) return true; }
         }
         if (action == MotionEvent.ACTION_UP) {
-            float speed = 0, signedSpeed = 0;
-            if (velocity != null) { velocity.computeCurrentVelocity(1000); signedSpeed = velocity.getXVelocity(); speed = Math.abs(signedSpeed); releaseVelocity(); }
-            if (dragging) {
+            if (swiping) {
                 float distance = -dragDirection * dx;
                 trackDirection(distance);
-                listener.drag(Math.max(0, distance)); listener.endDrag(!returning && distance > 0);
-                dragging = false; tracking = false; return true;
+                boolean commit = !returning && distance > 0;
+                if (dragging) { listener.drag(Math.max(0, distance)); listener.endDrag(commit); } else if (commit) listener.turn(dragDirection);
+                dragging = false; swiping = false; tracking = false; return true;
             }
             if (multiTouch) return super.dispatchTouchEvent(event);
             if (!moved && event.getEventTime() - downAt < ViewConfiguration.getLongPressTimeout()) {
                 cancelChildren(event); listener.tap(event.getX() / Math.max(1, getWidth())); return true;
             }
             float threshold = 48 * getResources().getDisplayMetrics().density;
-            float distance = Math.max(slop * 1.25f, 14 * getResources().getDisplayMetrics().density);
-            boolean fling = Math.abs(dx) > slop && speed >= ViewConfiguration.get(getContext()).getScaledMinimumFlingVelocity() * 2;
-            if (paged && (Math.abs(dx) >= distance || fling) && Math.abs(dx) > Math.abs(dy) * 1.1f) {
-                cancelChildren(event); listener.turn(dx < 0 ? 1 : -1); return true;
-            }
             if (!paged && Math.abs(dy) > threshold && Math.abs(dy) > Math.abs(dx) * 1.2f && (dy < 0 ? atBottom : atTop)) {
                 cancelChildren(event); listener.turn(dy < 0 ? 1 : -1); return true;
             }

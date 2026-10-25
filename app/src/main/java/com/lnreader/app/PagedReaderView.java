@@ -5,11 +5,17 @@ import android.animation.ValueAnimator;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Typeface;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Rect;
+import android.graphics.RectF;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.os.Bundle;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
-import android.view.View;
+import android.view.*;
 import android.view.accessibility.AccessibilityNodeInfo;
 import java.util.*;
 
@@ -34,11 +40,22 @@ final class PagedReaderView extends View {
     private ValueAnimator animator;
     private float fraction = 1;
     private int direction;
+    private final GestureDetector selectionGesture;
+    private final Paint selectionPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private ActionMode selectionMode;
+    private int selectionStart = -1, selectionEnd = -1, selectionHandle;
+    private float touchX, touchY;
 
     public PagedReaderView(Context context) { this(context, new Listener() { public void positionChanged(int offset, int page, int count) {} public void turn(int direction) {} }); }
 
     PagedReaderView(Context context, Listener listener) {
         super(context); this.listener = listener; setFocusable(true);
+        setLongClickable(true);
+        selectionGesture = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDown(MotionEvent event) { return true; }
+            @Override public boolean onSingleTapUp(MotionEvent event) { return true; }
+            @Override public void onLongPress(MotionEvent event) { touchX = event.getX(); touchY = event.getY(); performLongClick(); }
+        });
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         int x = Math.round(24 * getResources().getDisplayMetrics().density);
         int y = Math.round(20 * getResources().getDisplayMetrics().density);
@@ -66,6 +83,7 @@ final class PagedReaderView extends View {
         }
     }
     void content(CharSequence value, int offset) {
+        clearSelection();
         text = value; desiredOffset = Math.max(0, Math.min(value.length(), offset));
         // Reuse the boundary preview when release commits into that section.
         if (adjacentFrame != null && android.text.TextUtils.equals(value, adjacentFrame.layout.getText())) {
@@ -75,6 +93,7 @@ final class PagedReaderView extends View {
     int offset() { return layout == null || starts.isEmpty() ? desiredOffset : layout.getLineStart(starts.get(page)); }
     @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { desiredOffset = offset(); relayout(); listener.layoutChanged(); }
     private void relayout() {
+        clearSelection();
         adjacentFrame = null;
         int width = getWidth() - getPaddingLeft() - getPaddingRight();
         int height = getHeight() - getPaddingTop() - getPaddingBottom();
@@ -94,6 +113,7 @@ final class PagedReaderView extends View {
         for (int i = 0; i < starts.size(); i++) if (starts.get(i) <= target) page = i;
     }
     boolean turnPage(int direction) {
+        clearSelection();
         int next = page + direction;
         if (layout == null || next < 0 || next >= starts.size()) return false;
         page = next; desiredOffset = offset(); changed();
@@ -118,6 +138,7 @@ final class PagedReaderView extends View {
         animator.start();
     }
     boolean beginDrag(int direction, CharSequence adjacent, Runnable commit) {
+        clearSelection();
         finishAnimation(); if (!ready() || getWidth() <= 0 || getHeight() <= 0) return false;
         dragFrom = new Frame(layout, starts, page);
         if (canTurnPage(direction)) dragTo = new Frame(layout, starts, page + direction);
@@ -149,7 +170,7 @@ final class PagedReaderView extends View {
     float dragFraction() { return fraction; }
     private void recycleSnapshot() { dragging = false; dragCommit = null; dragFrom = null; dragTo = null; if (previousPage != null) { previousPage.recycle(); previousPage = null; } fraction = 1; invalidate(); }
     private void finishAnimation() { if (animator != null) { animator.cancel(); animator = null; } recycleSnapshot(); }
-    @Override protected void onDetachedFromWindow() { finishAnimation(); super.onDetachedFromWindow(); }
+    @Override protected void onDetachedFromWindow() { clearSelection(); finishAnimation(); super.onDetachedFromWindow(); }
     boolean ready() { return layout != null && !starts.isEmpty(); }
     private void changed() {
         invalidate();
@@ -179,8 +200,83 @@ final class PagedReaderView extends View {
         canvas.save();
         canvas.clipRect(getPaddingLeft(), getPaddingTop(), getWidth() - getPaddingRight(),
             Math.min(getHeight() - getPaddingBottom(), getPaddingTop() + bottom - top));
-        canvas.translate(getPaddingLeft(), getPaddingTop() - top); layout.draw(canvas); canvas.restore();
+        canvas.translate(getPaddingLeft(), getPaddingTop() - top);
+        if (selectionActive() && layout == this.layout && page == this.page) {
+            Path path = new Path(); layout.getSelectionPath(selectionStart, selectionEnd, path);
+            selectionPaint.setColor((paint.getColor() & 0x00ffffff) | 0x33000000); canvas.drawPath(path, selectionPaint);
+        }
+        layout.draw(canvas); canvas.restore();
+        if (selectionActive() && layout == this.layout && page == this.page) {
+            selectionPaint.setColor(paint.getColor()); float radius = 6 * getResources().getDisplayMetrics().density;
+            for (int endpoint : new int[]{selectionStart, selectionEnd}) {
+                float[] point = handlePoint(endpoint, endpoint == selectionEnd);
+                canvas.drawRect(point[0] - radius / 6, point[1] - radius * 2, point[0] + radius / 6, point[1], selectionPaint);
+                canvas.drawCircle(point[0], point[1], radius, selectionPaint);
+            }
+        }
     }
+    boolean selectionActive() { return selectionStart >= 0 && selectionEnd > selectionStart; }
+    String selectedText() { return selectionActive() ? text.subSequence(selectionStart, selectionEnd).toString() : ""; }
+    void clearSelection() {
+        ActionMode old = selectionMode; selectionMode = null; selectionStart = selectionEnd = -1; selectionHandle = 0;
+        if (old != null) old.finish(); invalidate();
+    }
+    private int pageEnd() { return page + 1 < starts.size() ? layout.getLineStart(starts.get(page + 1)) : text.length(); }
+    private int textOffset(float x, float y) {
+        int top = layout.getLineTop(starts.get(page));
+        int line = layout.getLineForVertical(Math.round(y - getPaddingTop() + top));
+        int last = page + 1 < starts.size() ? starts.get(page + 1) - 1 : layout.getLineCount() - 1;
+        line = Math.max(starts.get(page), Math.min(last, line));
+        return Math.max(offset(), Math.min(pageEnd(), layout.getOffsetForHorizontal(line, x - getPaddingLeft())));
+    }
+    private float[] handlePoint(int endpoint, boolean end) {
+        int line = layout.getLineForOffset(Math.max(0, end ? endpoint - 1 : endpoint));
+        float x = end && layout.getLineForOffset(endpoint) > line ? layout.getLineRight(line) : layout.getPrimaryHorizontal(endpoint);
+        return new float[]{getPaddingLeft() + x, getPaddingTop() + layout.getLineBottom(line) - layout.getLineTop(starts.get(page)) + 8 * getResources().getDisplayMetrics().density};
+    }
+    @Override public boolean performLongClick() {
+        if (!ready() || text.length() == 0) return false;
+        finishAnimation(); int at = Math.min(pageEnd() - 1, textOffset(touchX, touchY));
+        if (at < offset()) return false;
+        java.text.BreakIterator words = java.text.BreakIterator.getWordInstance(Locale.getDefault()); words.setText(text.toString());
+        selectionStart = Math.max(offset(), words.isBoundary(at) ? at : words.preceding(at));
+        int next = words.following(at); selectionEnd = Math.min(pageEnd(), next < 0 ? text.length() : next);
+        if (!selectionActive() || selectedText().trim().isEmpty()) { clearSelection(); return false; }
+        getParent().requestDisallowInterceptTouchEvent(true); invalidate();
+        selectionMode = startActionMode(new ActionMode.Callback2() {
+            @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) { menu.add(0, android.R.id.copy, 0, "复制").setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM); return true; }
+            @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) { return false; }
+            @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                if (item.getItemId() != android.R.id.copy) return false;
+                ((ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("正文", selectedText())); clearSelection(); return true;
+            }
+            @Override public void onDestroyActionMode(ActionMode mode) { if (selectionMode == mode) { selectionMode = null; selectionStart = selectionEnd = -1; selectionHandle = 0; invalidate(); } }
+            @Override public void onGetContentRect(ActionMode mode, View view, Rect out) {
+                if (!selectionActive()) { out.setEmpty(); return; }
+                Path path = new Path(); layout.getSelectionPath(selectionStart, selectionEnd, path); RectF rect = new RectF(); path.computeBounds(rect, true);
+                rect.offset(getPaddingLeft(), getPaddingTop() - layout.getLineTop(starts.get(page))); rect.roundOut(out);
+            }
+        }, ActionMode.TYPE_FLOATING);
+        return true;
+    }
+    @Override public boolean onTouchEvent(MotionEvent event) {
+        touchX = event.getX(); touchY = event.getY();
+        if (selectionActive()) {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                float[] start = handlePoint(selectionStart, false), end = handlePoint(selectionEnd, true);
+                double a = Math.hypot(touchX - start[0], touchY - start[1]), b = Math.hypot(touchX - end[0], touchY - end[1]);
+                if (Math.min(a, b) > 28 * getResources().getDisplayMetrics().density) clearSelection(); else selectionHandle = a < b ? -1 : 1;
+            } else if (event.getActionMasked() == MotionEvent.ACTION_MOVE && selectionHandle != 0) {
+                int at = textOffset(touchX, touchY - 8 * getResources().getDisplayMetrics().density);
+                if (selectionHandle < 0) selectionStart = Math.min(at, Character.offsetByCodePoints(text, selectionEnd, -1)); else selectionEnd = Math.max(Character.offsetByCodePoints(text, selectionStart, 1), at);
+                if (selectionMode != null) selectionMode.invalidateContentRect(); invalidate();
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) selectionHandle = 0;
+            return true;
+        }
+        boolean handled = selectionGesture.onTouchEvent(event);
+        if (event.getActionMasked() == MotionEvent.ACTION_UP && handled) performClick(); return true;
+    }
+    @Override public boolean performClick() { super.performClick(); return true; }
     @Override public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfo(info); info.setScrollable(true);
         info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD);

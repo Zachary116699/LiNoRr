@@ -19,11 +19,41 @@ public class GestureChecks extends Instrumentation {
     private Object call(Object o, String key, Class<?>[] types, Object... args) { try { Method m = o.getClass().getDeclaredMethod(key, types); m.setAccessible(true); return m.invoke(o, args); } catch (Exception e) { throw new RuntimeException(e); } }
     private void check(boolean value, String message) { if (!value) throw new AssertionError(message); }
     private void touch(NativeActivity activity, int action, float x, long down, long when) { runOnMainSync(() -> { ReaderSurface v = (ReaderSurface) get(activity, "readerSurface"); MotionEvent event = MotionEvent.obtain(down, when, action, v.getWidth() * x, v.getHeight() * .5f, 0); v.dispatchTouchEvent(event); event.recycle(); }); }
+    private void touchXY(NativeActivity activity, int action, float x, float y, long down, long when) { runOnMainSync(() -> { ReaderSurface v = (ReaderSurface) get(activity, "readerSurface"); MotionEvent event = MotionEvent.obtain(down, when, action, x, y, 0); v.dispatchTouchEvent(event); event.recycle(); }); }
+    private View find(View root, String value) {
+        if (value.equals(String.valueOf(root.getContentDescription())) || root instanceof android.widget.TextView && value.contentEquals(((android.widget.TextView) root).getText())) return root;
+        if (root instanceof ViewGroup) for (int i = 0; i < ((ViewGroup) root).getChildCount(); i++) { View match = find(((ViewGroup) root).getChildAt(i), value); if (match != null) return match; } return null;
+    }
+    private void inject(int action, float x, float y, long down) {
+        MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0); event.setSource(InputDevice.SOURCE_TOUCHSCREEN); check(getUiAutomation().injectInputEvent(event, true), "Pointer injection failed"); event.recycle();
+    }
+    private void shelfChecks(NativeActivity activity) throws Exception {
+        Library library = (Library) get(activity, "lib"); String original = (String) get(activity, "active");
+        JSONObject a = json("id", "qa-drag-a", "name", "Drag A"), b = json("id", "qa-drag-b", "name", "Drag B");
+        try {
+            runOnMainSync(() -> { library.shelves.add(a); library.shelves.add(b); try { Field field = NativeActivity.class.getDeclaredField("active"); field.setAccessible(true); field.set(activity, "qa-drag-a"); } catch (Exception e) { throw new RuntimeException(e); } call(activity, "showShelf", new Class<?>[]{}); });
+            runOnMainSync(() -> { View icon = find(activity.getWindow().getDecorView(), "分类书架图标"); check(icon instanceof android.widget.ImageView && "shelf".equals(get(((android.widget.ImageView) icon).getDrawable(), "kind")), "User shelf icon changed"); call(activity, "openDrawer", new Class<?>[]{}); });
+            Dialog drawer = (Dialog) get(activity, "drawer"); View root = drawer.getWindow().getDecorView(); runOnMainSync(() -> find(root, "编辑书架").performClick()); waitForIdleSync();
+            final int[] start = new int[2], end = new int[2];
+            runOnMainSync(() -> { View handle = find(root, "拖动Drag A"), target = find(root, "拖动Drag B"); check(handle != null && target != null, "Drag handles missing"); handle.getLocationOnScreen(start); start[0] += handle.getWidth() / 2; start[1] += handle.getHeight() / 2; target.getLocationOnScreen(end); end[0] += target.getWidth() / 2; end[1] += target.getHeight() / 2; });
+            long down = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, start[0], start[1], down); Thread.sleep(180);
+            final float[] x = new float[1]; runOnMainSync(() -> { View preview = find(root, "书架拖动预览"); check(preview != null, "Drag preview missing"); x[0] = preview.getX(); check(x[0] >= 0 && x[0] + preview.getWidth() <= ((View) preview.getParent()).getWidth(), "Preview begins outside drawer"); });
+            inject(MotionEvent.ACTION_MOVE, start[0] + 160, (start[1] + end[1]) / 2f, down); Thread.sleep(120);
+            runOnMainSync(() -> check(find(root, "书架拖动预览").getX() == x[0], "Drag preview moved horizontally"));
+            Bitmap image = getUiAutomation().takeScreenshot(); try (OutputStream out = new FileOutputStream(new File(getTargetContext().getCacheDir(), "shelf-drag.png"))) { image.compress(Bitmap.CompressFormat.PNG, 100, out); } image.recycle();
+            inject(MotionEvent.ACTION_MOVE, end[0] + 240, end[1], down); Thread.sleep(100); inject(MotionEvent.ACTION_UP, end[0] + 240, end[1], down); Thread.sleep(250);
+            runOnMainSync(() -> { check(library.shelves.indexOf(a) > library.shelves.indexOf(b), "Drop did not reorder shelves"); check(find(root, "书架拖动预览") == null, "Preview remains after drop"); drawer.dismiss(); if (!library.books.isEmpty()) call(activity, "bookEditor", new Class<?>[]{JSONObject.class}, library.books.get(0)); });
+            runOnMainSync(() -> { java.util.Map<Dialog,?> dialogs = (java.util.Map<Dialog,?>) get(activity, "dialogShells"); Dialog book = null; for (Dialog dialog : dialogs.keySet()) if (dialog.isShowing()) book = dialog; check(book != null, "Book editor missing"); View dialog = book.getWindow().getDecorView(); check(find(dialog, "文件名称") != null && find(dialog, "页码数量") != null, "Metadata labels missing"); book.dismiss(); });
+        } finally {
+            runOnMainSync(() -> { library.shelves.remove(a); library.shelves.remove(b); Dialog drawer = (Dialog) get(activity, "drawer"); if (drawer != null) drawer.dismiss(); try { Field field = NativeActivity.class.getDeclaredField("active"); field.setAccessible(true); field.set(activity, original); } catch (Exception e) { throw new RuntimeException(e); } call(activity, "showShelf", new Class<?>[]{}); call(activity, "persist", new Class<?>[]{}); });
+        }
+    }
     @Override public void onStart() {
         Bundle result = new Bundle(); File fixture = null;
         try {
             check("LNReader_QA".equals(arguments.getString("guard")), "Dedicated QA guard required");
             NativeActivity activity = (NativeActivity) startActivitySync(new Intent(getTargetContext(), NativeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            if ("true".equals(arguments.getString("shelf"))) { Thread.sleep(400); shelfChecks(activity); result.putString("stream", "PASS: fixed-X shelf dragging, native drop reordering, custom shelf icon and metadata labels\n"); finish(Activity.RESULT_OK, result); return; }
             Thread.sleep(500); Library library = (Library) get(activity, "lib");
             String content = "第一章 起点\n" + "正文在这一行，检查平移时相邻页面的位置和取消后的阅读进度。\n".repeat(160) + "第二章 下一章\n章节边界后的正文。\n";
             String id = "eeeeeeeeeeeeeeeeeeeeeeee"; fixture = new File(library.root, id + ".txt"); BackupFiles.write(fixture, content.getBytes(StandardCharsets.UTF_8));
@@ -61,7 +91,26 @@ public class GestureChecks extends Instrumentation {
             check(book.optInt("position") == original, "Full-width preview changed history before release");
             touch(activity, MotionEvent.ACTION_UP, -.25f, at, at + 400); Thread.sleep(180);
             runOnMainSync(() -> { PagedReaderView view = (PagedReaderView) get(activity, "pagedReader"); Bitmap committed = Bitmap.createBitmap(view.getWidth(), view.getHeight(), Bitmap.Config.ARGB_8888); view.draw(new Canvas(committed)); check(held[0].sameAs(committed), "Full-width held preview snapped back before release"); held[0].recycle(); committed.recycle(); });
-            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: held half-page rendering, small swipes, slow reversal, resumed forward drag, continuous paging and both chapter boundaries\n"); finish(Activity.RESULT_OK, result);
+            // The horizontal component is deliberately below Android's touch slop.
+            for (String animation : new String[]{"slide", "none"}) for (int horizontal : new int[]{-1, 1}) for (int vertical : new int[]{-1, 1}) {
+                runOnMainSync(() -> { set(library.prefs(), "pageAnimation", animation); call(activity, "jump", new Class<?>[]{int.class}, 0); if (horizontal > 0) call(activity, "turnPageNow", new Class<?>[]{int.class}, 1); });
+                int before = book.optInt("position"); at = SystemClock.uptimeMillis();
+                touchXY(activity, MotionEvent.ACTION_DOWN, 540, 900, at, at); touchXY(activity, MotionEvent.ACTION_MOVE, 540 + horizontal * 12, 900 + vertical * 20, at, at + 60); touchXY(activity, MotionEvent.ACTION_UP, 540 + horizontal * 12, 900 + vertical * 20, at, at + 120);
+                check(horizontal < 0 ? book.optInt("position") > before : book.optInt("position") < before, "Short diagonal trend ignored: " + animation + "/" + horizontal + "/" + vertical); Thread.sleep(120);
+            }
+            runOnMainSync(() -> { set(library.prefs(), "pageAnimation", "slide"); call(activity, "jump", new Class<?>[]{int.class}, 0); });
+            at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, 540, 900, at, at); touchXY(activity, MotionEvent.ACTION_MOVE, 541, 970, at, at + 60); touchXY(activity, MotionEvent.ACTION_UP, 541, 970, at, at + 120); check(book.optInt("position") == original, "Vertical movement should not flip pages");
+            final float[] word = new float[2];
+            runOnMainSync(() -> { PagedReaderView view = (PagedReaderView) get(activity, "pagedReader"); android.text.StaticLayout layout = (android.text.StaticLayout) get(view, "layout"); int index = layout.getText().toString().indexOf("相邻"); int line = layout.getLineForOffset(index); word[0] = view.getPaddingLeft() + layout.getPrimaryHorizontal(index) + 4; word[1] = view.getPaddingTop() + (layout.getLineTop(line) + layout.getLineBottom(line)) / 2f; });
+            at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, word[0], word[1], at, at); Thread.sleep(ViewConfiguration.getLongPressTimeout() + 180); touchXY(activity, MotionEvent.ACTION_UP, word[0], word[1], at, SystemClock.uptimeMillis());
+            PagedReaderView view = (PagedReaderView) get(activity, "pagedReader"); check(view.selectionActive() && !view.selectedText().isEmpty(), "Long press did not select text");
+            final String firstSelection = view.selectedText(); final float[][] handle = new float[1][];
+            runOnMainSync(() -> handle[0] = (float[]) call(view, "handlePoint", new Class<?>[]{int.class, boolean.class}, (int) get(view, "selectionEnd"), true));
+            at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, handle[0][0], handle[0][1], at, at); touchXY(activity, MotionEvent.ACTION_MOVE, handle[0][0] + 150, handle[0][1] + 70, at, at + 100); touchXY(activity, MotionEvent.ACTION_UP, handle[0][0] + 150, handle[0][1] + 70, at, at + 200);
+            check(view.selectionActive() && !view.selectedText().equals(firstSelection), "Selection handle did not adjust text"); check(book.optInt("position") == original, "Dragging selection unexpectedly paged");
+            Thread.sleep(150); Bitmap selectionImage = getUiAutomation().takeScreenshot(); try (OutputStream out = new FileOutputStream(new File(getTargetContext().getCacheDir(), "text-selection.png"))) { selectionImage.compress(Bitmap.CompressFormat.PNG, 100, out); } selectionImage.recycle();
+            runOnMainSync(() -> { String selected = view.selectedText(); ActionMode mode = (ActionMode) get(view, "selectionMode"); check(mode != null && mode.getMenu().findItem(android.R.id.copy) != null, "Copy is missing from selection menu"); mode.getMenu().performIdentifierAction(android.R.id.copy, 0); ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE); check(clipboard.hasPrimaryClip() && selected.contentEquals(clipboard.getPrimaryClip().getItemAt(0).coerceToText(activity)), "Copied text does not match selected text"); check(!view.selectionActive(), "Copy did not dismiss selection"); });
+            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: held half-page rendering, short diagonal trends in both animation modes, slow reversal, continuous paging, both chapter boundaries, long-press selection, handle adjustment and clipboard copy\n"); finish(Activity.RESULT_OK, result);
         } catch (Throwable error) { result.putString("stream", "FAIL: " + android.util.Log.getStackTraceString(error)); finish(Activity.RESULT_CANCELED, result); }
         finally { if (fixture != null) fixture.delete(); }
     }

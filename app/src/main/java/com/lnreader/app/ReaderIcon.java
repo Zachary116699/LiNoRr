@@ -22,6 +22,10 @@ final class ReaderIcon extends Drawable {
         paint.setStyle(Paint.Style.STROKE);
         Path p = new Path();
         switch (kind) {
+            case "clock":
+                canvas.drawCircle(12, 12, 9, paint); p.moveTo(12, 6); p.lineTo(12, 12); p.lineTo(16, 14); canvas.drawPath(p, paint); break;
+            case "library":
+                p.moveTo(2, 8); p.lineTo(12, 2); p.lineTo(22, 8); p.close(); canvas.drawPath(p, paint); canvas.drawLine(2, 22, 22, 22, paint); canvas.drawLine(4, 19, 20, 19, paint); for (int x = 5; x <= 19; x += 7) canvas.drawLine(x, 10, x, 18, paint); break;
             case "expand_all":
             case "collapse_all":
                 for (int y = 6; y <= 15; y += 9) { boolean down = kind.equals("expand_all"); p.moveTo(5, down ? y : y + 5); p.lineTo(12, down ? y + 5 : y); p.lineTo(19, down ? y : y + 5); canvas.drawPath(p, paint); p.reset(); } break;
