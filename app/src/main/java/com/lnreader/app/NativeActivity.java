@@ -20,7 +20,7 @@ import static com.lnreader.app.Library.*;
 
 /** The shipped Android UI uses native views exclusively. */
 public final class NativeActivity extends Activity {
-    private static final int TXT = 51, TREE = 52, FONT = 53, COVER = 54, BACKUP_TREE = 55, STORAGE = 56;
+    private static final int TXT = 51, TREE = 52, FONT = 53, COVER = 54, BACKUP_TREE = 55, STORAGE = 56, PHOTOS = 57;
     private static final int BG = 0xfff7f6f2, INK = 0xff303b32, MUTED = 0xff8a8e83, ACCENT = 0xff52634e;
     private Library lib;
     private LinearLayout root, content, cards, readingBody;
@@ -46,7 +46,7 @@ public final class NativeActivity extends Activity {
     private PagedReaderView pagedReader;
     private SeekBar progress;
     private JSONObject current;
-    private String source = "", active = "recent", query = "", importShelf = "default", grouping = "separate";
+    private String source = "", active = "recent", query = "", searchDraft = "", importShelf = "default", grouping = "separate";
     private List<BookParser.Chapter> chapters = new ArrayList<>();
     private List<BookParser.Chapter> toc = new ArrayList<>();
     private Library.Document document;
@@ -54,6 +54,7 @@ public final class NativeActivity extends Activity {
     private JSONObject coverTarget;
     private Runnable storageAction;
     private boolean waitingStorage;
+    private boolean waitingPhotosSettings;
     private int chapter, bodyOffset, pagePrefix, searchToken;
     private boolean list, importing, positioning, controlsVisible, endReached;
     private int pageNumber = 1, pageCount = 1;
@@ -184,7 +185,10 @@ public final class NativeActivity extends Activity {
         } catch (Exception e) { runOnUiThread(this::hideBusy); toast("备份未完成：" + e.getMessage()); } });
     }
     private void organizeAndRefresh() { if (lib.canWrite()) migrateBackup(this::showShelf); else { persist(); showShelf(); } }
-    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) { super.onRequestPermissionsResult(request, permissions, results); if (request == STORAGE) completeStorageRequest(); }
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results); if (request == STORAGE) completeStorageRequest();
+        if (request == PHOTOS && coverTarget != null) { if (canReadPhotos()) openCoverGallery(coverTarget); else photoPermissionHelp(coverTarget); }
+    }
     private void completeStorageRequest() {
         if (!waitingStorage) return; waitingStorage = false; Runnable action = storageAction; storageAction = null;
         if (lib.canWrite()) {
@@ -218,8 +222,9 @@ public final class NativeActivity extends Activity {
         ImageButton viewToggle = shelfIcon(list ? "grid" : "list", "切换列表或网格显示", () -> {}); viewToggle.setOnClickListener(v -> { list = !list; set(shelfView(), "list", list); viewToggle.setImageDrawable(new ReaderIcon(list ? "grid" : "list", shelfInk(), getResources().getDisplayMetrics().density)); persist(); renderCards(shelfMatches); }); shelfHeading.addView(viewToggle, new LinearLayout.LayoutParams(dp(44), dp(44)));
         ImageButton expand = shelfIcon("filter", "展开或收起筛选排序", () -> { toolsExpanded = !toolsExpanded; if (!toolsExpanded) { selectionMode = false; selectedBooks.clear(); } updateShelfTools(); renderCards(shelfMatches); }); shelfHeading.addView(expand, new LinearLayout.LayoutParams(dp(44), dp(44))); content.addView(shelfHeading); gap(content, 4);
         shelfTools = column(); content.addView(shelfTools);
-        LinearLayout tools = row(); EditText search = input("搜索书名或文件名", query); search.setTextSize(17); search.setContentDescription("搜索书名或文件名"); weighted(tools, search);
-        tools.addView(shelfIcon("search", "搜索书籍", () -> { query = search.getText().toString(); shelfPage = 0; scheduleSearch(); ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(search.getWindowToken(), 0); }), new LinearLayout.LayoutParams(dp(44), dp(44))); shelfTools.addView(tools);
+        LinearLayout tools = row(); EditText search = input("搜索书名或文件名", searchDraft); search.setTextSize(17); search.setContentDescription("搜索书名或文件名"); weighted(tools, search);
+        Runnable submitSearch = () -> { query = searchDraft = search.getText().toString(); shelfPage = 0; scheduleSearch(); hideKeyboard(search); };
+        tools.addView(shelfIcon("search", "搜索书籍", submitSearch), new LinearLayout.LayoutParams(dp(44), dp(44))); shelfTools.addView(tools);
         countRow = row(); content.addView(countRow); shelfCount = text("", 14, shelfMuted()); weighted(countRow, shelfCount);
         cancelSelection = shelfButton("取消选择", () -> { selectedBooks.clear(); selectionMode = false; renderCards(shelfMatches); }); countRow.addView(cancelSelection);
         cancelSelection.setMinHeight(dp(36)); cancelSelection.setMinimumHeight(dp(36)); padding(cancelSelection, 8, 2);
@@ -236,8 +241,8 @@ public final class NativeActivity extends Activity {
         emptyShelf = text("", 18, shelfMuted()); emptyShelf.setGravity(Gravity.CENTER); page.addView(emptyShelf, new LinearLayout.LayoutParams(-1, dp(280))); bookGrid.setEmptyView(emptyShelf);
         shelfPager = row(); shelfPager.setGravity(Gravity.CENTER); padding(shelfPager, 0, 18); page.addView(shelfPager);
         shelfAdapter = new ShelfAdapter(); bookGrid.setAdapter(shelfAdapter);
-        search.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH); search.setOnEditorActionListener((v, action, event) -> { query = search.getText().toString(); shelfPage = 0; scheduleSearch(); return false; });
-        search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int a, int c, int f) {} public void onTextChanged(CharSequence s, int a, int b, int c) { query = s.toString(); shelfPage = 0; scheduleSearch(); } public void afterTextChanged(Editable e) {} });
+        bindSearch(search, submitSearch);
+        search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int a, int c, int f) {} public void onTextChanged(CharSequence s, int a, int b, int c) { searchDraft = s.toString(); } public void afterTextChanged(Editable e) {} });
         if (query.isEmpty()) renderCards(null); else scheduleSearch();
     }
     private JSONObject shelfView() {
@@ -341,6 +346,14 @@ public final class NativeActivity extends Activity {
             for (JSONObject b : lib.books) if (b.optString("title").toLowerCase(Locale.ROOT).contains(term) || Library.fileNames(b).toLowerCase(Locale.ROOT).contains(term)) matches.add(b.optString("id"));
             renderCards(matches);
         }, 120);
+    }
+    private void hideKeyboard(View view) { ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(view.getWindowToken(), 0); }
+    private void bindSearch(EditText input, Runnable submit) {
+        input.setSingleLine(true); input.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        input.setOnEditorActionListener((v, action, event) -> {
+            if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER) { if (event.getAction() == KeyEvent.ACTION_DOWN) submit.run(); return true; }
+            if (action == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH || action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) { submit.run(); return true; } return false;
+        });
     }
     private void renderCards(Set<String> matches) {
         if (bookGrid == null || shelfAdapter == null) return; shelfMatches = matches; filteredBooks.clear();
@@ -485,7 +498,7 @@ public final class NativeActivity extends Activity {
         LinkedHashSet<String> memberships = new LinkedHashSet<>(Library.shelfIds(book)); body.addView(bookCategories(memberships)); gap(body, 8);
         Dialog dialog = sheet("书籍管理", body);
         body.addView(button("保存", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty()) return; set(book, "title", value.substring(0, Math.min(value.length(), 120))); Library.setShelfIds(book, memberships); dialog.dismiss(); organizeAndRefresh(); }));
-        body.addView(button("导入图片作为封面", false, () -> { dialog.dismiss(); ensureStorage(() -> { coverTarget = book; Intent picker = Build.VERSION.SDK_INT >= 33 ? new Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*") : new Intent(Intent.ACTION_PICK).setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*"); try { startActivityForResult(picker, COVER); } catch (ActivityNotFoundException error) { toast("未找到可用的系统相册"); } }); }));
+        body.addView(button("导入图片作为封面", false, () -> { dialog.dismiss(); ensureStorage(() -> chooseCover(book)); }));
         body.addView(button("章节匹配设置", false, () -> { dialog.dismiss(); chapterSettings(book); }));
         body.addView(button("从书架移除", false, () -> { dialog.dismiss(); confirmRemove(Collections.singleton(book.optString("id"))); }));
     }
@@ -493,6 +506,31 @@ public final class NativeActivity extends Activity {
         LinearLayout line = row(); line.setMinimumHeight(dp(28)); padding(line, 0, 2);
         line.addView(text(label, 14, uiMuted()), new LinearLayout.LayoutParams(dp(76), -2));
         TextView text = text(value.isEmpty() ? "—" : value, 14, uiMuted()); text.setGravity(Gravity.END); text.setTextIsSelectable(true); weighted(line, text); body.addView(line);
+    }
+    private boolean allPhotosAllowed() { return checkSelfPermission(Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES : android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
+    private boolean canReadPhotos() { return allPhotosAllowed() || Build.VERSION.SDK_INT >= 34 && checkSelfPermission(android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
+    private void chooseCover(JSONObject book) { coverTarget = book; if (canReadPhotos()) openCoverGallery(book); else requestCoverPhotos(book); }
+    private void requestCoverPhotos(JSONObject book) {
+        coverTarget = book;
+        requestPermissions(Build.VERSION.SDK_INT >= 34 ? new String[]{android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED}
+            : new String[]{Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES : android.Manifest.permission.READ_EXTERNAL_STORAGE}, PHOTOS);
+    }
+    private void photoPermissionHelp(JSONObject book) {
+        LinearLayout body = column(); body.addView(text("允许访问所有照片后，即可浏览完整本地图集。", 16, uiInk())); Dialog dialog = sheet("照片权限", body);
+        body.addView(button("打开照片权限设置", true, () -> { dialog.dismiss(); openPhotoSettings(book); }));
+        body.addView(button("取消", false, () -> { coverTarget = null; dialog.dismiss(); }));
+    }
+    private void openPhotoSettings(JSONObject book) { coverTarget = book; waitingPhotosSettings = true; startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); }
+    private void openCoverGallery(JSONObject book) {
+        coverTarget = book; Dialog[] dialog = {null};
+        MediaGallery gallery = new MediaGallery(this, uiInk(), uiBg(), !allPhotosAllowed(), () -> { dialog[0].dismiss(); requestCoverPhotos(book); }, uri -> { dialog[0].dismiss(); saveCover(book, uri); });
+        dialog[0] = sheet("选择封面", gallery);
+        sheetAction(dialog[0], "settings", "照片权限设置", () -> { dialog[0].dismiss(); openPhotoSettings(book); });
+        dialog[0].setOnDismissListener(v -> { gallery.close(); if (coverTarget == book) coverTarget = null; });
+    }
+    private void saveCover(JSONObject book, Uri image) {
+        coverTarget = null; showBusy("正在压缩并备份封面…");
+        io.execute(() -> { try { atomic(new File(lib.directory(book), "cover.jpg"), compressedCover(image)); runOnUiThread(() -> { set(book, "cover", true); coverCache.evictAll(); hideBusy(); persist(); showShelf(); }); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("封面导入失败：" + e.getMessage()); } });
     }
     private View bookCover(JSONObject book, int width, int height) {
         FrameLayout cover = new FrameLayout(this); cover.setBackground(shape(BookIdentity.coverColor(book.optString("contentHash", book.optString("id"))), 7)); cover.setClipToOutline(true); cover.setLayoutParams(new LinearLayout.LayoutParams(dp(width), dp(height)));
@@ -871,7 +909,7 @@ public final class NativeActivity extends Activity {
     private void catalog() {
         if (toc.isEmpty()) { LinearLayout empty = column(); empty.addView(text("未识别到章节", 16, uiMuted())); Dialog d = sheet("目录", empty); sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); }); empty.addView(button("返回阅读", false, d::dismiss)); return; }
         List<BookParser.Chapter> chapters = toc;
-        LinearLayout body = column(); EditText search = input("搜索章节", ""); search.setTextSize(17); body.addView(search); ListView entries = new ListView(this); body.addView(entries, new LinearLayout.LayoutParams(-1, dp(getResources().getConfiguration().screenHeightDp / 2))); Dialog d = sheet("目录 · " + chapters.size() + " 章", body);
+        LinearLayout body = column(); EditText search = input("搜索章节", ""); search.setContentDescription("搜索章节输入框"); search.setTextSize(17); LinearLayout searchLine = row(); weighted(searchLine, search); body.addView(searchLine); String[] chapterQuery = {""}; ListView entries = new ListView(this); body.addView(entries, new LinearLayout.LayoutParams(-1, dp(getResources().getConfiguration().screenHeightDp / 2))); Dialog d = sheet("目录 · " + chapters.size() + " 章", body);
         ChapterTree tree = new ChapterTree(chapters);
         collapsedChapters.clear(); collapsedChapters.addAll(tree.collapsedOutsidePath(currentTocIndex()));
         List<Integer> indices = new ArrayList<>();
@@ -888,10 +926,10 @@ public final class NativeActivity extends Activity {
                 item.setPadding(dp(Math.min(4, tree.depth[index]) * 8), 0, dp(4), 0);
                 item.setSelected(index == currentTocIndex()); item.setBackground(shape(index == currentTocIndex() ? shelfDark() ? 0xff46513f : 0xffd5dfcf : Color.TRANSPARENT, 8));
                 if (tree.branch[index]) {
-                    Button toggle = button(collapsedChapters.contains(index) && search.length() == 0 ? "▸" : "▾", false, () -> {
+                    Button toggle = button(collapsedChapters.contains(index) && chapterQuery[0].isEmpty() ? "▸" : "▾", false, () -> {
                         int first = entries.getFirstVisiblePosition(); View top = entries.getChildAt(0); int y = top == null ? 0 : top.getTop();
                         if (!collapsedChapters.remove(index)) collapsedChapters.add(index);
-                        indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); notifyDataSetChanged(); fit.run(); entries.setSelectionFromTop(first, y);
+                        indices.clear(); indices.addAll(tree.visible(collapsedChapters, chapterQuery[0])); notifyDataSetChanged(); fit.run(); entries.setSelectionFromTop(first, y);
                     });
                     toggle.setContentDescription((collapsedChapters.contains(index) ? "展开" : "收起") + chapters.get(index).title);
                     padding(toggle, 0, 0); item.addView(toggle, new LinearLayout.LayoutParams(dp(32), dp(48)));
@@ -910,11 +948,12 @@ public final class NativeActivity extends Activity {
             }
         };
         entries.setAdapter(adapter);
-        Runnable render = () -> { indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); adapter.notifyDataSetChanged(); fit.run(); };
+        Runnable render = () -> { indices.clear(); indices.addAll(tree.visible(collapsedChapters, chapterQuery[0])); adapter.notifyDataSetChanged(); fit.run(); };
         sheetAction(d, "expand_all", "全部展开", () -> { collapsedChapters.clear(); render.run(); });
         sheetAction(d, "collapse_all", "全部收起", () -> { for (int i = 0; i < tree.branch.length; i++) if (tree.branch[i]) collapsedChapters.add(i); render.run(); });
         sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); });
-        search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int a, int c, int f) {} public void onTextChanged(CharSequence s, int a, int b, int c) { render.run(); } public void afterTextChanged(Editable e) {} }); render.run();
+        Runnable submit = () -> { chapterQuery[0] = search.getText().toString(); render.run(); hideKeyboard(search); };
+        searchLine.addView(readerIconButton("search", "搜索章节", submit), new LinearLayout.LayoutParams(dp(44), dp(44))); bindSearch(search, submit); render.run();
         entries.setSelection(Math.max(0, indices.indexOf(currentTocIndex())));
         body.addView(button("返回阅读", false, d::dismiss));
     }
@@ -1150,8 +1189,7 @@ public final class NativeActivity extends Activity {
         super.onActivityResult(request, result, data); if (result != RESULT_OK || data == null) return;
         if ((request == TREE || request == BACKUP_TREE) && data.getData() != null) { Uri tree = data.getData(); try { int flags = Intent.FLAG_GRANT_READ_URI_PERMISSION; if ((data.getFlags() & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0) flags |= Intent.FLAG_GRANT_WRITE_URI_PERMISSION; getContentResolver().takePersistableUriPermission(tree, flags); if (request == BACKUP_TREE) changeBackupFolder(tree); else { getPreferences(0).edit().putString("lastImportTree", tree.toString()).apply(); scan(tree); } } catch (Exception e) { toast("文件夹授权失败，请重试"); } }
         else if (request == COVER && data.getData() != null && coverTarget != null) {
-            JSONObject book = coverTarget; coverTarget = null; showBusy("正在压缩并备份封面…"); Uri image = data.getData();
-            io.execute(() -> { try { atomic(new File(lib.directory(book), "cover.jpg"), compressedCover(image)); runOnUiThread(() -> { set(book, "cover", true); coverCache.evictAll(); hideBusy(); persist(); showShelf(); }); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("封面导入失败：" + e.getMessage()); } });
+            saveCover(coverTarget, data.getData());
         }
         else if (request == TXT) { showBusy("正在导入…"); io.execute(() -> { try { List<Entry> entries = new ArrayList<>(); if (data.getClipData() != null) for (int i = 0; i < data.getClipData().getItemCount(); i++) entries.add(entry(data.getClipData().getItemAt(i).getUri(), "")); else if (data.getData() != null) entries.add(entry(data.getData(), "")); importEntries(entries, "合辑", "", null); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("导入失败：" + e.getMessage()); } }); }
         else if (request == FONT && data.getData() != null) { showBusy("正在加载字体…"); io.execute(() -> { try { byte[] bytes = read(getContentResolver().openInputStream(data.getData()), 40_000_000); File temp = new File(getCacheDir(), "font-check"); atomic(temp, bytes); Typeface.createFromFile(temp); atomic(new File(getFilesDir(), "reader-font"), bytes); temp.delete(); runOnUiThread(() -> { hideBusy(); set(lib.prefs(), "font", "自选字体"); if (current != null) buildReader(current.optInt("position")); persist(); toast("字体已应用"); }); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("字体无效，请选择 TTF / OTF 文件"); } }); }
@@ -1173,6 +1211,7 @@ public final class NativeActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (lib != null && waitingStorage && Build.VERSION.SDK_INT >= 30) completeStorageRequest();
+        if (lib != null && waitingPhotosSettings) { waitingPhotosSettings = false; if (coverTarget != null && canReadPhotos()) openCoverGallery(coverTarget); else { coverTarget = null; toast("尚未获得照片访问权限"); } }
         if (!statusRegistered) {
             IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED); filter.addAction(Intent.ACTION_TIME_TICK); filter.addAction(Intent.ACTION_TIME_CHANGED); filter.addAction(Intent.ACTION_TIMEZONE_CHANGED);
             registerReceiver(statusReceiver, filter); statusRegistered = true;

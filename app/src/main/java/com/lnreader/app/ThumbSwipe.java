@@ -6,7 +6,7 @@ final class ThumbSwipe {
     private float origin, extreme, furthest;
     private int direction;
     private boolean returning;
-    ThumbSwipe(float density) { noise = 1.5f * density; reverseNoise = 3 * density; }
+    ThumbSwipe(float density) { noise = .5f * density; reverseNoise = 3 * density; }
     void reset(float x) { origin = x; extreme = furthest = 0; direction = 0; returning = false; }
     int direction() { return direction; }
     float distance(float x) { return direction == 0 ? 0 : -direction * (x - origin); }
