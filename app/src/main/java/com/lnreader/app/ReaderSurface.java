@@ -18,18 +18,12 @@ final class ReaderSurface extends FrameLayout {
     private boolean tracking, moved, atTop, atBottom;
     private boolean multiTouch;
     private boolean dragging, swiping;
-    private int dragDirection;
-    private float dragPrevious;
-    private boolean returning;
-    private void trackDirection(float distance) {
-        float hysteresis = getResources().getDisplayMetrics().density;
-        if (returning) { if (distance > dragPrevious + hysteresis) { returning = false; dragPrevious = distance; } else dragPrevious = Math.min(dragPrevious, distance); }
-        else { if (distance < dragPrevious - hysteresis) { returning = true; dragPrevious = distance; } else dragPrevious = Math.max(dragPrevious, distance); }
-    }
+    private final ThumbSwipe swipe;
     public ReaderSurface(Context context) { this(context, true, new Listener() { public void tap(float fraction) {} public void turn(int direction) {} }); }
     ReaderSurface(Context context, boolean paged, Listener listener) {
         super(context); this.paged = paged; this.listener = listener;
         slop = ViewConfiguration.get(context).getScaledTouchSlop();
+        swipe = new ThumbSwipe(getResources().getDisplayMetrics().density);
     }
     void overlays(View header, View footer) { this.header = header; this.footer = footer; }
     void scrollChild(ScrollView child) { scroll = child; }
@@ -39,6 +33,7 @@ final class ReaderSurface extends FrameLayout {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             downX = event.getX(); downY = event.getY(); downAt = event.getEventTime(); moved = false; multiTouch = false; dragging = false; swiping = false;
+            swipe.reset(downX);
             tracking = !inside(header, downX, downY) && !inside(footer, downX, downY);
             atTop = scroll == null || !scroll.canScrollVertically(-1);
             atBottom = scroll == null || !scroll.canScrollVertically(1);
@@ -51,19 +46,24 @@ final class ReaderSurface extends FrameLayout {
         if (Math.abs(dx) > slop || Math.abs(dy) > slop || event.getPointerCount() > 1) moved = true;
         if (swiping && multiTouch) { if (dragging) listener.endDrag(false); dragging = false; swiping = false; tracking = false; cancelChildren(event); return true; }
         if ((action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_UP) && paged && !multiTouch) {
-            // A small noise floor distinguishes a swipe from a tap; diagonal motion is welcome.
-            float noise = 2 * getResources().getDisplayMetrics().density;
-            if (!swiping && event.getEventTime() - downAt < ViewConfiguration.getLongPressTimeout() && Math.abs(dx) > noise && Math.abs(dx) >= Math.abs(dy) * .35f) {
-                dragDirection = dx < 0 ? 1 : -1; swiping = true; dragging = listener.beginDrag(dragDirection); dragPrevious = -dragDirection * dx; returning = false; cancelChildren(event);
+            int previousDirection = swipe.direction();
+            if (swiping || event.getEventTime() - downAt < ViewConfiguration.getLongPressTimeout()) {
+                // Batched events can contain the outward arc even when the last sample curls back.
+                for (int i = 0; i < event.getHistorySize(); i++) swipe.move(event.getHistoricalX(i));
+                swipe.move(event.getX());
             }
-            if (swiping) { float distance = -dragDirection * dx; trackDirection(distance); if (dragging) listener.drag(Math.max(0, distance)); if (action == MotionEvent.ACTION_MOVE) return true; }
+            if (!swiping && swipe.direction() != 0) {
+                swiping = true; dragging = listener.beginDrag(swipe.direction()); cancelChildren(event);
+            } else if (swiping && swipe.direction() != previousDirection) {
+                if (dragging) listener.endDrag(false);
+                dragging = listener.beginDrag(swipe.direction());
+            }
+            if (swiping) { if (dragging) listener.drag(Math.max(0, swipe.distance(event.getX()))); if (action == MotionEvent.ACTION_MOVE) return true; }
         }
         if (action == MotionEvent.ACTION_UP) {
             if (swiping) {
-                float distance = -dragDirection * dx;
-                trackDirection(distance);
-                boolean commit = !returning && distance > 0;
-                if (dragging) { listener.drag(Math.max(0, distance)); listener.endDrag(commit); } else if (commit) listener.turn(dragDirection);
+                boolean commit = swipe.commit(event.getX());
+                if (dragging) { listener.drag(Math.max(0, swipe.distance(event.getX()))); listener.endDrag(commit); } else if (commit) listener.turn(swipe.direction());
                 dragging = false; swiping = false; tracking = false; return true;
             }
             if (multiTouch) return super.dispatchTouchEvent(event);

@@ -264,38 +264,37 @@ public final class NativeActivity extends Activity {
         drawer = new Dialog(this); ShelfSurface surface = new ShelfSurface(this, drawer::dismiss, -1); LinearLayout shell = column(); padding(shell, 16, 20); shell.setBackgroundColor(uiBg()); surface.addView(shell, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout top = row(); weighted(top, text("书架", 23, uiInk())); top.addView(button("×", false, drawer::dismiss)); shell.addView(top); gap(shell, 12);
         List<JSONObject> entries = new ArrayList<>(); Runnable refill = () -> { entries.clear(); entries.add(json("id", "recent", "name", "最近阅读")); entries.add(json("id", "all", "name", "全部书籍")); for (JSONObject shelf : lib.shelves) if (!isBuiltinShelf(shelf.optString("id"))) entries.add(shelf); }; refill.run();
-        boolean[] editing = {false}; ListView choices = new ListView(this); choices.setDivider(null); choices.setContentDescription("书架分类列表"); final View[] dragPreview = {null};
+        boolean[] editing = {false}; ListView choices = new ListView(this); choices.setDivider(null); choices.setContentDescription("书架分类列表"); final ShelfReorder[] reorder = {null};
         BaseAdapter adapter = new BaseAdapter() {
             public int getCount() { return entries.size(); } public Object getItem(int p) { return entries.get(p); } public long getItemId(int p) { return entries.get(p).optString("id").hashCode(); }
             public View getView(int p, View recycled, ViewGroup parent) {
                 JSONObject shelf = entries.get(p); String id = shelf.optString("id"); boolean user = !isBuiltinShelf(id); LinearLayout item = column(), line = row(); padding(line, 8, 4); line.setMinimumHeight(dp(52));
                 if (editing[0] && user) { ImageButton handle = shelfIcon("drag", "拖动" + shelf.optString("name"), () -> {}); handle.setOnTouchListener((v, event) -> {
                     if (event.getActionMasked() != MotionEvent.ACTION_DOWN) return false;
-                    View preview = new View(NativeActivity.this) { @Override protected void onDraw(Canvas canvas) { canvas.drawColor(shelfHeaderBg()); line.draw(canvas); } };
-                    preview.setContentDescription("书架拖动预览"); preview.setElevation(dp(8));
-                    int[] origin = new int[2], base = new int[2]; line.getLocationInWindow(origin); surface.getLocationInWindow(base);
-                    surface.addView(preview, new FrameLayout.LayoutParams(line.getWidth(), line.getHeight())); preview.setX(origin[0] - base[0]); preview.setY(origin[1] - base[1]); dragPreview[0] = preview;
-                    boolean started = v.startDragAndDrop(null, new View.DragShadowBuilder() { @Override public void onProvideShadowMetrics(Point size, Point touch) { size.set(1, 1); touch.set(0, 0); } @Override public void onDrawShadow(Canvas canvas) {} }, shelf, 0);
-                    if (!started) { surface.removeView(preview); dragPreview[0] = null; } return true;
+                    reorder[0].start(v, line, shelf); return true;
                 }); line.addView(handle, new LinearLayout.LayoutParams(dp(32), dp(44))); }
                 TextView name = text(shelf.optString("name"), 17, uiInk()); name.setSingleLine(); name.setEllipsize(TextUtils.TruncateAt.END); name.setTypeface(null, id.equals(active) ? Typeface.BOLD : Typeface.NORMAL); weighted(line, name);
                 if (editing[0] && user) {
                     line.addView(shelfIcon("edit", "重命名" + shelf.optString("name"), () -> { drawer.dismiss(); shelfEditor(shelf); }), new LinearLayout.LayoutParams(dp(36), dp(44)));
                     ImageButton delete = shelfIcon("trash", "删除" + shelf.optString("name"), () -> { drawer.dismiss(); deleteShelf(shelf); }); delete.setImageDrawable(new ReaderIcon("trash", dangerInk(), getResources().getDisplayMetrics().density)); line.addView(delete, new LinearLayout.LayoutParams(dp(36), dp(44)));
                 } else { int count = 0; for (JSONObject book : lib.books) if (inShelf(book, id)) count++; line.addView(text(String.valueOf(id.equals("recent") ? Math.min(90, count) : count), 14, uiMuted())); }
-                if (id.equals(active)) line.setBackground(shape(shelfHeaderBg(), 8)); item.addView(line); if (p == 1) { gap(item, 8); rule(item); gap(item, 8); } return item;
+                if (id.equals(active)) line.setBackground(shape(shelfHeaderBg(), 8)); item.addView(line); if (p == 1) { gap(item, 8); rule(item); gap(item, 8); } reorder[0].bind(item, shelf, p); return item;
             }
         };
+        reorder[0] = new ShelfReorder(surface, choices, new ShelfReorder.Model() {
+            public int indexOf(Object item) { return entries.indexOf(item); }
+            public int count() { return entries.size(); }
+            public int background() { return shelfHeaderBg(); }
+            public void move(Object item, int target) {
+                JSONObject moving = (JSONObject) item, destination = entries.get(target);
+                if (moving == destination) return;
+                int index = lib.shelves.indexOf(destination); lib.shelves.remove(moving); lib.shelves.add(Math.min(index, lib.shelves.size()), moving);
+                refill.run(); adapter.notifyDataSetChanged(); persist();
+            }
+        });
         choices.setAdapter(adapter);
         choices.setOnItemClickListener((parent, view, p, id) -> { if (editing[0]) return; active = entries.get(p).optString("id"); shelfPage = 0; drawer.dismiss(); persist(); showShelf(); });
         choices.setOnItemLongClickListener((parent, view, p, id) -> { JSONObject shelf = entries.get(p); if (!isBuiltinShelf(shelf.optString("id"))) { drawer.dismiss(); shelfEditor(shelf); return true; } return false; });
-        choices.setOnDragListener((view, event) -> {
-            if (!editing[0] || !(event.getLocalState() instanceof JSONObject)) return false;
-            if (event.getAction() == DragEvent.ACTION_DRAG_LOCATION) { if (dragPreview[0] != null) { int[] origin = new int[2], base = new int[2]; choices.getLocationInWindow(origin); surface.getLocationInWindow(base); dragPreview[0].setY(origin[1] - base[1] + event.getY() - dragPreview[0].getHeight() / 2f); } if (event.getY() < dp(48)) choices.smoothScrollBy(-dp(24), 80); else if (event.getY() > choices.getHeight() - dp(48)) choices.smoothScrollBy(dp(24), 80); }
-            if (event.getAction() == DragEvent.ACTION_DRAG_ENDED && dragPreview[0] != null) { surface.removeView(dragPreview[0]); dragPreview[0] = null; }
-            if (event.getAction() == DragEvent.ACTION_DROP) { int index = choices.pointToPosition((int) event.getX(), (int) event.getY()); if (index < 2 || index >= entries.size()) return false; JSONObject moving = (JSONObject) event.getLocalState(), target = entries.get(index); if (moving != target) { int destination = lib.shelves.indexOf(target); lib.shelves.remove(moving); lib.shelves.add(Math.min(destination, lib.shelves.size()), moving); refill.run(); adapter.notifyDataSetChanged(); persist(); } }
-            return true;
-        });
         shell.addView(choices, new LinearLayout.LayoutParams(-1, 0, 1)); shell.addView(button("新增书架", true, () -> { drawer.dismiss(); shelfEditor(null); }));
         Button edit = button("编辑书架", false, () -> {}); edit.setOnClickListener(v -> { editing[0] = !editing[0]; edit.setText(editing[0] ? "完成编辑" : "编辑书架"); adapter.notifyDataSetChanged(); }); shell.addView(edit);
         drawer.setContentView(surface); Window window = drawer.getWindow(); if (window != null) { window.setBackgroundDrawableResource(android.R.color.transparent); window.setGravity(Gravity.START | Gravity.TOP); }

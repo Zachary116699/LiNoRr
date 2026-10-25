@@ -28,24 +28,31 @@ public class GestureChecks extends Instrumentation {
         MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0); event.setSource(InputDevice.SOURCE_TOUCHSCREEN); check(getUiAutomation().injectInputEvent(event, true), "Pointer injection failed"); event.recycle();
     }
     private void shelfChecks(NativeActivity activity) throws Exception {
-        Library library = (Library) get(activity, "lib"); String original = (String) get(activity, "active");
+        Library library = (Library) get(activity, "lib"); String active = (String) get(activity, "active"), original = active.startsWith("qa-drag-") ? "all" : active;
         JSONObject a = json("id", "qa-drag-a", "name", "Drag A"), b = json("id", "qa-drag-b", "name", "Drag B");
         try {
-            runOnMainSync(() -> { library.shelves.add(a); library.shelves.add(b); try { Field field = NativeActivity.class.getDeclaredField("active"); field.setAccessible(true); field.set(activity, "qa-drag-a"); } catch (Exception e) { throw new RuntimeException(e); } call(activity, "showShelf", new Class<?>[]{}); });
+            runOnMainSync(() -> { library.shelves.removeIf(s -> s.optString("id").startsWith("qa-drag-")); library.shelves.add(a); library.shelves.add(b); try { Field field = NativeActivity.class.getDeclaredField("active"); field.setAccessible(true); field.set(activity, "qa-drag-a"); } catch (Exception e) { throw new RuntimeException(e); } call(activity, "showShelf", new Class<?>[]{}); });
             runOnMainSync(() -> { View icon = find(activity.getWindow().getDecorView(), "分类书架图标"); check(icon instanceof android.widget.ImageView && "shelf".equals(get(((android.widget.ImageView) icon).getDrawable(), "kind")), "User shelf icon changed"); call(activity, "openDrawer", new Class<?>[]{}); });
             Dialog drawer = (Dialog) get(activity, "drawer"); View root = drawer.getWindow().getDecorView(); runOnMainSync(() -> find(root, "编辑书架").performClick()); waitForIdleSync();
             final int[] start = new int[2], end = new int[2];
             runOnMainSync(() -> { View handle = find(root, "拖动Drag A"), target = find(root, "拖动Drag B"); check(handle != null && target != null, "Drag handles missing"); handle.getLocationOnScreen(start); start[0] += handle.getWidth() / 2; start[1] += handle.getHeight() / 2; target.getLocationOnScreen(end); end[0] += target.getWidth() / 2; end[1] += target.getHeight() / 2; });
             long down = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, start[0], start[1], down); Thread.sleep(180);
             final float[] x = new float[1]; runOnMainSync(() -> { View preview = find(root, "书架拖动预览"); check(preview != null, "Drag preview missing"); x[0] = preview.getX(); check(x[0] >= 0 && x[0] + preview.getWidth() <= ((View) preview.getParent()).getWidth(), "Preview begins outside drawer"); });
-            inject(MotionEvent.ACTION_MOVE, start[0] + 160, (start[1] + end[1]) / 2f, down); Thread.sleep(120);
-            runOnMainSync(() -> check(find(root, "书架拖动预览").getX() == x[0], "Drag preview moved horizontally"));
+            inject(MotionEvent.ACTION_MOVE, start[0] + 160, end[1], down); Thread.sleep(180);
             Bitmap image = getUiAutomation().takeScreenshot(); try (OutputStream out = new FileOutputStream(new File(getTargetContext().getCacheDir(), "shelf-drag.png"))) { image.compress(Bitmap.CompressFormat.PNG, 100, out); } image.recycle();
+            runOnMainSync(() -> { check(find(root, "书架拖动预览").getX() == x[0], "Drag preview moved horizontally"); int[] shifted = new int[2]; View neighbor = find(root, "拖动Drag B"); neighbor.getLocationOnScreen(shifted); check(shifted[1] < end[1] - neighbor.getHeight(), "Neighbor did not make room before release: y=" + shifted[1] + " originalCenter=" + end[1] + " h=" + neighbor.getHeight() + " shift=" + ((View) neighbor.getParent().getParent()).getTranslationY()); check(library.shelves.indexOf(a) < library.shelves.indexOf(b), "Order saved before drop"); });
             inject(MotionEvent.ACTION_MOVE, end[0] + 240, end[1], down); Thread.sleep(100); inject(MotionEvent.ACTION_UP, end[0] + 240, end[1], down); Thread.sleep(250);
-            runOnMainSync(() -> { check(library.shelves.indexOf(a) > library.shelves.indexOf(b), "Drop did not reorder shelves"); check(find(root, "书架拖动预览") == null, "Preview remains after drop"); drawer.dismiss(); if (!library.books.isEmpty()) call(activity, "bookEditor", new Class<?>[]{JSONObject.class}, library.books.get(0)); });
+            runOnMainSync(() -> { check(library.shelves.indexOf(a) > library.shelves.indexOf(b), "Drop did not reorder shelves"); check(find(root, "书架拖动预览") == null, "Preview remains after drop"); View source = find(root, "拖动Drag A"), target = find(root, "拖动Drag B"); source.getLocationOnScreen(start); start[0] += source.getWidth() / 2; start[1] += source.getHeight() / 2; target.getLocationOnScreen(end); end[0] += target.getWidth() / 2; end[1] += target.getHeight() / 2; });
+            down = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, start[0], start[1], down); Thread.sleep(100); inject(MotionEvent.ACTION_MOVE, end[0] + 100, end[1], down); Thread.sleep(180);
+            runOnMainSync(() -> { int[] shifted = new int[2]; find(root, "拖动Drag B").getLocationOnScreen(shifted); check(shifted[1] > end[1] + 30, "Upward drag did not push neighbor down"); find(root, "拖动Drag A").cancelDragAndDrop(); });
+            inject(MotionEvent.ACTION_UP, end[0] + 100, end[1], down); Thread.sleep(220);
+            for (int i = 0; i < 16; i++) { boolean[] settled = {false}; runOnMainSync(() -> settled[0] = find(root, "书架拖动预览") == null); if (settled[0]) break; Thread.sleep(50); }
+            runOnMainSync(() -> { check(library.shelves.indexOf(a) > library.shelves.indexOf(b), "Cancelled drag saved a new order"); check(find(root, "书架拖动预览") == null, "Cancelled preview remains"); drawer.dismiss(); if (!library.books.isEmpty()) call(activity, "bookEditor", new Class<?>[]{JSONObject.class}, library.books.get(0)); });
             runOnMainSync(() -> { java.util.Map<Dialog,?> dialogs = (java.util.Map<Dialog,?>) get(activity, "dialogShells"); Dialog book = null; for (Dialog dialog : dialogs.keySet()) if (dialog.isShowing()) book = dialog; check(book != null, "Book editor missing"); View dialog = book.getWindow().getDecorView(); check(find(dialog, "文件名称") != null && find(dialog, "页码数量") != null, "Metadata labels missing"); book.dismiss(); });
         } finally {
             runOnMainSync(() -> { library.shelves.remove(a); library.shelves.remove(b); Dialog drawer = (Dialog) get(activity, "drawer"); if (drawer != null) drawer.dismiss(); try { Field field = NativeActivity.class.getDeclaredField("active"); field.setAccessible(true); field.set(activity, original); } catch (Exception e) { throw new RuntimeException(e); } call(activity, "showShelf", new Class<?>[]{}); call(activity, "persist", new Class<?>[]{}); });
+            ((java.util.concurrent.ExecutorService) get(activity, "saveIo")).submit(() -> {}).get();
+            library.saveSnapshot(library.snapshot());
         }
     }
     @Override public void onStart() {
@@ -100,6 +107,22 @@ public class GestureChecks extends Instrumentation {
             }
             runOnMainSync(() -> { set(library.prefs(), "pageAnimation", "slide"); call(activity, "jump", new Class<?>[]{int.class}, 0); });
             at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, 540, 900, at, at); touchXY(activity, MotionEvent.ACTION_MOVE, 541, 970, at, at + 60); touchXY(activity, MotionEvent.ACTION_UP, 541, 970, at, at + 120); check(book.optInt("position") == original, "Vertical movement should not flip pages");
+            float density = activity.getResources().getDisplayMetrics().density;
+            for (String animation : new String[]{"slide", "none"}) for (int side : new int[]{-1, 1}) for (int vertical : new int[]{-1, 1}) for (float length : new float[]{1.8f, 5f}) {
+                runOnMainSync(() -> { set(library.prefs(), "pageAnimation", animation); call(activity, "showControls", new Class<?>[]{boolean.class}, true); call(activity, "jump", new Class<?>[]{int.class}, 0); if (side > 0) call(activity, "turnPageNow", new Class<?>[]{int.class}, 1); });
+                int before = book.optInt("position"); float startX = side < 0 ? 900 : 160; at = SystemClock.uptimeMillis();
+                touchXY(activity, MotionEvent.ACTION_DOWN, startX, 1000, at, at);
+                for (int i = 1; i <= 5; i++) touchXY(activity, MotionEvent.ACTION_MOVE, startX + side * length * density * i / 5, 1000 + vertical * 14 * density * i, at, at + i * 25);
+                touchXY(activity, MotionEvent.ACTION_UP, startX + side * (length - .2f) * density, 1000 + vertical * 72 * density, at, at + 180);
+                check(side < 0 ? book.optInt("position") > before : book.optInt("position") < before, "Thumb arc failed: " + animation + "/" + side + "/" + vertical + "/" + length); Thread.sleep(100);
+            }
+            runOnMainSync(() -> { set(library.prefs(), "pageAnimation", "slide"); call(activity, "showControls", new Class<?>[]{boolean.class}, false); call(activity, "jump", new Class<?>[]{int.class}, 0); });
+            at = SystemClock.uptimeMillis(); final long batchAt = at;
+            touchXY(activity, MotionEvent.ACTION_DOWN, 800, 900, at, at);
+            runOnMainSync(() -> { ReaderSurface surface = (ReaderSurface) get(activity, "readerSurface"); MotionEvent batch = MotionEvent.obtain(batchAt, batchAt + 30, MotionEvent.ACTION_MOVE, 800 - 2 * density, 900 + 30 * density, 0); batch.addBatch(batchAt + 60, 800 - 4 * density, 900 + 60 * density, 1, 1, 0); batch.addBatch(batchAt + 90, 800 - 3.5f * density, 900 + 70 * density, 1, 1, 0); surface.dispatchTouchEvent(batch); batch.recycle(); });
+            touchXY(activity, MotionEvent.ACTION_UP, 800 - 3.5f * density, 900 + 70 * density, at, at + 130); check(book.optInt("position") > original, "Batched thumb arc was ignored"); Thread.sleep(120);
+            int beforeHook = book.optInt("position"); at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, 800, 900, at, at); touchXY(activity, MotionEvent.ACTION_MOVE, 800 + 2 * density, 910, at, at + 30); touchXY(activity, MotionEvent.ACTION_MOVE, 800 - 6 * density, 940, at, at + 60); touchXY(activity, MotionEvent.ACTION_UP, 800 - 5.8f * density, 950, at, at + 100); check(book.optInt("position") > beforeHook, "Initial hook turned the wrong way"); Thread.sleep(120);
+            runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, 0));
             final float[] word = new float[2];
             runOnMainSync(() -> { PagedReaderView view = (PagedReaderView) get(activity, "pagedReader"); android.text.StaticLayout layout = (android.text.StaticLayout) get(view, "layout"); int index = layout.getText().toString().indexOf("相邻"); int line = layout.getLineForOffset(index); word[0] = view.getPaddingLeft() + layout.getPrimaryHorizontal(index) + 4; word[1] = view.getPaddingTop() + (layout.getLineTop(line) + layout.getLineBottom(line)) / 2f; });
             at = SystemClock.uptimeMillis(); touchXY(activity, MotionEvent.ACTION_DOWN, word[0], word[1], at, at); Thread.sleep(ViewConfiguration.getLongPressTimeout() + 180); touchXY(activity, MotionEvent.ACTION_UP, word[0], word[1], at, SystemClock.uptimeMillis());
