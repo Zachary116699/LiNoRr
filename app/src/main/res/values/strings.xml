@@ -9,4 +9,6 @@
     <string name="import_separate">每个 TXT 识别为一本书</string>
     <string name="import_merged">合并识别为一整本书（按文件名排序）</string>
     <string name="organizing">正在整理 · %1$s</string>
+    <string name="category_summary">%1$s %2$s</string>
+    <string name="category_count">%1$d 个分类</string>
 </resources>

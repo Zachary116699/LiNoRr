@@ -14,7 +14,7 @@ function nodes(){adb('shell','uiautomator','dump','/sdcard/polish-window.xml'); 
 function touch(n){assert.ok(n,'Missing node'); const b=n.bounds.match(/\d+/g).map(Number); adb('shell','input','tap',String((b[0]+b[2])>>1),String((b[1]+b[3])>>1));}
 async function tap(label){for(let i=0;i<5;i++){let all=nodes(),node=all.find(n=>n['content-desc']===label)||all.find(n=>n.text===label||n.text===label+' ✓');if(node){touch(node);await pause(400);return;}await pause(300);}throw Error('Missing control: '+label);}
 function state(){return JSON.parse(adb('exec-out','run-as','com.lnreader.app','cat','files/library/library.json'));}
-function shot(name){mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.8-'+name+'.png',adb('exec-out','screencap','-p'));}
+function shot(name){mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.9-'+name+'.png',adb('exec-out','screencap','-p'));}
 async function launch(){adb('shell','am','force-stop','com.lnreader.app');adb('shell','am','start','-n','com.lnreader.app/.NativeActivity');await pause(700);}
 async function shelf(name){await tap('打开书架抽屉');await tap(name);}
 const visibleTitles=()=>nodes().filter(n=>n['content-desc']?.endsWith('封面')).map(n=>n['content-desc'].slice(0,-2));
@@ -27,7 +27,7 @@ async function addShelf(name){await tap('打开书架抽屉');await tap('新增�
 async function removeShelf(name){await tap('打开书架抽屉');await tap('编辑书架');await tap('删除'+name);await tap('删除');await waitFor(()=>!state().shelves.some(s=>s.name===name));}
 if(!process.env.POLISH_TAIL){
 const gestures=adb('shell','am','instrument','-w','-e','guard','LNReader_QA','-e','gesture','true','com.lnreader.app.test/com.lnreader.app.StorageChecks').toString();assert.ok(!gestures.includes('FAIL:'),gestures);assert.match(gestures,/PASS: held/);console.log(gestures.trim());
-mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.8-drag-half.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/drag-half.png'));
+mkdirSync('artifacts',{recursive:true});writeFileSync('artifacts/android-0.9.9-drag-half.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/drag-half.png'));
 await launch();
 assert.ok(!nodes().some(n=>n['content-desc']==='搜索书名或文件名'));
 assert.ok(nodes().some(n=>/本书$/.test(n.text)),'Book count stays visible when collapsed');
@@ -51,13 +51,18 @@ for(const name of ['PolishA','PolishB'])if(state().shelves.some(s=>s.name===name
 await addShelf('PolishA');await addShelf('PolishB');await tap('打开书架抽屉');await tap('编辑书架');
 let edit=nodes();assert.ok(!edit.some(n=>n['content-desc']==='删除最近阅读'||n['content-desc']==='删除全部书籍'));let a=edit.find(n=>n['content-desc']==='拖动PolishA').bounds.match(/\d+/g).map(Number),d=edit.find(n=>n['content-desc']==='拖动PolishB').bounds.match(/\d+/g).map(Number);
 adb('shell','input','swipe',String((a[0]+a[2])>>1),String((a[1]+a[3])>>1),String((d[0]+d[2])>>1),String((d[1]+d[3])>>1),'650');await pause(400);await waitFor(()=>state().shelves.findIndex(s=>s.name==='PolishB')<state().shelves.findIndex(s=>s.name==='PolishA'));shot('drawer-edit');await tap('完成编辑');await tap('全部书籍');
-await search('QA700-010');await tap('管理QA700-010');await reveal('分类：PolishA');await tap('分类：PolishA');await tap('分类：PolishB');await reveal('保存');await tap('保存');
+await search('QA700-010');await tap('管理QA700-010');
+let info=nodes();assert.ok(!info.some(n=>n['content-desc']==='分类：PolishA'));
+let infoY=label=>Number(info.find(n=>n.text===label).bounds.match(/\d+/g)[1]);assert.ok(infoY('导入日期')-infoY('文件大小')<100,'Read-only metadata rows are compact');shot('compact-book-info');
+await reveal('展开或收起所属分类');await tap('展开或收起所属分类');await reveal('分类：PolishA');
+let categories=nodes(), box=categories.find(n=>n['content-desc']==='分类：PolishA'),name=categories.find(n=>n.text==='PolishA');assert.ok(Number(box.bounds.match(/\d+/g)[0])>=Number(name.bounds.match(/\d+/g)[2]),'Checkbox sits to the right of the category name');
+await tap('分类：PolishA');await tap('分类：PolishB');shot('book-categories');await tap('展开或收起所属分类');assert.ok(!nodes().some(n=>n['content-desc']==='分类：PolishA'));await reveal('保存');await tap('保存');
 const chosen=()=>state().books.find(b=>b.title==='QA700-010');await waitFor(()=>chosen().shelfIds?.length===2&&chosen().directory.startsWith('book/PolishA/'));const id=chosen().id;
 await shelf('PolishA');assert.ok(visibleTitles().includes('QA700-010'));await shelf('PolishB');assert.ok(visibleTitles().includes('QA700-010'));
 await tap('打开书架抽屉');await tap('编辑书架');await tap('重命名PolishA');await type('书架名称','PolishRenamed');await tap('保存书架');await waitFor(()=>chosen().directory.startsWith('book/PolishRenamed/'));
 await removeShelf('PolishRenamed');await waitFor(()=>chosen().shelfIds.length===1&&chosen().directory.startsWith('book/PolishB/'));await removeShelf('PolishB');await waitFor(()=>chosen().shelfIds.length===0&&chosen().directory.startsWith('book/无分类/'));assert.equal(chosen().id,id);
 await shelf('全部书籍');await search('QA700-010');
-const readerBg=state().prefs.bg;await tap('书架设置');await reveal('青绿');await tap('青绿');await tap('雾蓝');await waitFor(()=>state().uiTheme==='blue');assert.equal(state().prefs.bg,readerBg,'UI theme must not modify reader background');shot('ui-blue');
+const readerBg=state().prefs.bg;await tap('书架设置');await reveal('青绿');await tap('青绿');assert.equal(nodes().filter(n=>['青绿','雾蓝','暖沙','藕粉','石墨','藤紫'].includes(n['content-desc'])).length,6);assert.ok(!nodes().some(n=>n.text==='自定义'));shot('six-ui-themes');await tap('雾蓝');await waitFor(()=>state().uiTheme==='blue');assert.equal(state().prefs.bg,readerBg,'UI theme must not modify reader background');shot('ui-blue');
 } else { await launch();await shelf('全部书籍');await search('QA700-010'); }
 await tap('书架设置');await tap('恢复默认备份文件夹');await tap('恢复默认');await waitFor(()=>{try{return JSON.parse(adb('exec-out','cat','/sdcard/Download/LNReader/userdata.json')).books.length===693;}catch{return false;}});assert.equal(state().books.length,693);
 await tap('管理QA700-010');await reveal('导入图片作为封面');await tap('导入图片作为封面');assert.ok(nodes().some(n=>/photopicker|providers.media/.test(n.package)));shot('photo-picker');adb('shell','input','keyevent','4');

@@ -21,6 +21,11 @@ final class ReaderSurface extends FrameLayout {
     private int dragDirection;
     private float dragPrevious;
     private boolean returning;
+    private void trackDirection(float distance) {
+        float hysteresis = Math.max(2, slop * .25f);
+        if (returning) { if (distance > dragPrevious + hysteresis) { returning = false; dragPrevious = distance; } else dragPrevious = Math.min(dragPrevious, distance); }
+        else { if (distance < dragPrevious - hysteresis) { returning = true; dragPrevious = distance; } else dragPrevious = Math.max(dragPrevious, distance); }
+    }
     private VelocityTracker velocity;
     private void releaseVelocity() { if (velocity != null) { velocity.recycle(); velocity = null; } }
     @Override protected void onDetachedFromWindow() { releaseVelocity(); super.onDetachedFromWindow(); }
@@ -50,19 +55,18 @@ final class ReaderSurface extends FrameLayout {
         if (Math.abs(dx) > slop || Math.abs(dy) > slop || event.getPointerCount() > 1) moved = true;
         if (dragging && multiTouch) { listener.endDrag(false); dragging = false; tracking = false; cancelChildren(event); return true; }
         if (action == MotionEvent.ACTION_MOVE && paged && !multiTouch) {
-            if (!dragging && Math.abs(dx) >= Math.max(slop * 1.25f, 14 * getResources().getDisplayMetrics().density) && Math.abs(dx) > Math.abs(dy) * 1.1f) {
+            if (!dragging && Math.abs(dx) > slop && Math.abs(dx) > Math.abs(dy) * 1.1f) {
                 dragDirection = dx < 0 ? 1 : -1; dragging = listener.beginDrag(dragDirection); dragPrevious = Math.max(0, -dragDirection * dx); returning = false; if (dragging) cancelChildren(event);
             }
-            if (dragging) { float distance = Math.max(0, -dragDirection * dx), delta = distance - dragPrevious; if (delta > slop * .25f) returning = false; else if (delta < -slop * .25f) returning = true; dragPrevious = distance; listener.drag(distance); return true; }
+            if (dragging) { float distance = -dragDirection * dx; trackDirection(distance); listener.drag(Math.max(0, distance)); return true; }
         }
         if (action == MotionEvent.ACTION_UP) {
             float speed = 0, signedSpeed = 0;
             if (velocity != null) { velocity.computeCurrentVelocity(1000); signedSpeed = velocity.getXVelocity(); speed = Math.abs(signedSpeed); releaseVelocity(); }
             if (dragging) {
                 float distance = -dragDirection * dx;
-                boolean reversed = dragDirection * signedSpeed > ViewConfiguration.get(getContext()).getScaledMinimumFlingVelocity() * 2;
-                float delta = distance - dragPrevious; if (delta > slop * .25f) returning = false; else if (delta < -slop * .25f) returning = true;
-                listener.drag(Math.max(0, distance)); listener.endDrag(!reversed && !returning && distance >= Math.max(slop * 1.25f, 14 * getResources().getDisplayMetrics().density));
+                trackDirection(distance);
+                listener.drag(Math.max(0, distance)); listener.endDrag(!returning && distance > 0);
                 dragging = false; tracking = false; return true;
             }
             if (multiTouch) return super.dispatchTouchEvent(event);

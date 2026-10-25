@@ -36,11 +36,32 @@ public class GestureChecks extends Instrumentation {
             check(book.optInt("position") == original, "Preview changed history before release");
             touch(activity, MotionEvent.ACTION_MOVE, .5f, at, at + 250); touch(activity, MotionEvent.ACTION_UP, .5f, at, at + 500); Thread.sleep(180); check(book.optInt("position") == original, "Reverse gesture did not cancel");
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .75f, at, at + 100); touch(activity, MotionEvent.ACTION_UP, .75f, at, at + 500); Thread.sleep(180); check(book.optInt("position") > original, "Slow short swipe lost sensitivity"); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, original));
+            // 32px is above native touch slop but below the former 14dp threshold.
+            float shortX = .8f - 32f / getTargetContext().getResources().getDisplayMetrics().widthPixels;
+            at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, shortX, at, at + 100); touch(activity, MotionEvent.ACTION_UP, shortX, at, at + 500); Thread.sleep(180); check(book.optInt("position") > original, "Small intentional swipe still requires fixed travel"); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, original));
+            at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .6f, at, at + 100);
+            for (int i = 1; i <= 20; i++) touch(activity, MotionEvent.ACTION_MOVE, .6f + i * .001f, at, at + 100 + i * 20);
+            touch(activity, MotionEvent.ACTION_UP, .62f, at, at + 700); Thread.sleep(180); check(book.optInt("position") == original, "Slow accumulated reversal was ignored");
+            at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .6f, at, at + 100); touch(activity, MotionEvent.ACTION_MOVE, .65f, at, at + 200); touch(activity, MotionEvent.ACTION_MOVE, .58f, at, at + 300); touch(activity, MotionEvent.ACTION_UP, .58f, at, at + 700); Thread.sleep(180); check(book.optInt("position") > original, "Resumed forward drag should commit"); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, original));
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .3f, at, at + 100); touch(activity, MotionEvent.ACTION_UP, .3f, at, at + 400); Thread.sleep(180); check(book.optInt("position") > original, "Forward release did not commit");
             runOnMainSync(() -> { call(activity, "jump", new Class<?>[]{int.class}, content.indexOf("第二章") - 1); call(activity, "capture", new Class<?>[]{}); }); int previous = book.optInt("position");
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .3f, at, at + 100); touch(activity, MotionEvent.ACTION_CANCEL, .3f, at, at + 300); Thread.sleep(180); check(book.optInt("position") == previous, "System cancellation changed chapter");
             at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .3f, at, at + 100); touch(activity, MotionEvent.ACTION_UP, .3f, at, at + 400); Thread.sleep(180); check(book.optInt("position") >= content.indexOf("第二章"), "Cross-chapter drag failed");
-            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: held half-page rendering, reversible drag, commit, cancellation and chapter boundaries\n"); finish(Activity.RESULT_OK, result);
+            at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .2f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .7f, at, at + 100); touch(activity, MotionEvent.ACTION_UP, .7f, at, at + 400); Thread.sleep(180); check(book.optInt("position") < content.indexOf("第二章"), "Backward cross-chapter drag failed");
+            runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, original));
+            for (int direction : new int[]{1, -1}) for (int i = 0; i < 4; i++) {
+                int before = book.optInt("position"); at = SystemClock.uptimeMillis(); float end = .5f - direction * .05f;
+                touch(activity, MotionEvent.ACTION_DOWN, .5f, at, at); touch(activity, MotionEvent.ACTION_MOVE, end, at, at + 50); touch(activity, MotionEvent.ACTION_UP, end, at, at + 100);
+                check(direction > 0 ? book.optInt("position") > before : book.optInt("position") < before, "Continuous drag lost a turn during settling"); Thread.sleep(20);
+            }
+            check(book.optInt("position") == original, "Continuous forward/backward paging lost its position");
+            at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, -.25f, at, at + 100);
+            final Bitmap[] held = new Bitmap[1];
+            runOnMainSync(() -> { PagedReaderView view = (PagedReaderView) get(activity, "pagedReader"); held[0] = Bitmap.createBitmap(view.getWidth(), view.getHeight(), Bitmap.Config.ARGB_8888); view.draw(new Canvas(held[0])); });
+            check(book.optInt("position") == original, "Full-width preview changed history before release");
+            touch(activity, MotionEvent.ACTION_UP, -.25f, at, at + 400); Thread.sleep(180);
+            runOnMainSync(() -> { PagedReaderView view = (PagedReaderView) get(activity, "pagedReader"); Bitmap committed = Bitmap.createBitmap(view.getWidth(), view.getHeight(), Bitmap.Config.ARGB_8888); view.draw(new Canvas(committed)); check(held[0].sameAs(committed), "Full-width held preview snapped back before release"); held[0].recycle(); committed.recycle(); });
+            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: held half-page rendering, small swipes, slow reversal, resumed forward drag, continuous paging and both chapter boundaries\n"); finish(Activity.RESULT_OK, result);
         } catch (Throwable error) { result.putString("stream", "FAIL: " + android.util.Log.getStackTraceString(error)); finish(Activity.RESULT_CANCELED, result); }
         finally { if (fixture != null) fixture.delete(); }
     }

@@ -56,7 +56,6 @@ public final class NativeActivity extends Activity {
     private boolean waitingStorage;
     private int chapter, bodyOffset, pagePrefix, searchToken;
     private boolean list, importing, positioning, controlsVisible, endReached;
-    private boolean previewingPage;
     private int pageNumber = 1, pageCount = 1;
     private volatile int paginationGeneration;
     private int[] pageTotals;
@@ -158,7 +157,6 @@ public final class NativeActivity extends Activity {
         }
     }
     private void persist() {
-        if (previewingPage) return;
         set(lib.state, "active", active); set(lib.state, "list", list);
         handler.removeCallbacks(exportTask); handler.postDelayed(exportTask, 120);
     }
@@ -303,6 +301,7 @@ public final class NativeActivity extends Activity {
             case "sand": return new int[]{0xfff8f5ef, 0xffeee5d7, 0xff806746, 0xff29251e, 0xff393126, 0xffd9c5a3};
             case "rose": return new int[]{0xfff8f3f4, 0xffefe1e5, 0xff815c6b, 0xff292126, 0xff3b2e35, 0xffdcb8c8};
             case "slate": return new int[]{0xfff5f5f5, 0xffe5e6e8, 0xff5d626b, 0xff232428, 0xff32343a, 0xffc3c7d0};
+            case "lavender": return new int[]{0xfff6f3f8, 0xffe9e2ef, 0xff706080, 0xff26222c, 0xff342d3d, 0xffcdbddd};
             default: return new int[]{BG, 0xffe9ede3, ACCENT, 0xff20231f, 0xff2c332b, 0xffb9cdb0};
         }
     }
@@ -398,7 +397,7 @@ public final class NativeActivity extends Activity {
         }
     }
     private Dialog sheet(String title, LinearLayout body) {
-        Dialog d = new Dialog(this); LinearLayout shell = column(); padding(shell, 22, 16); shell.setBackground(shape(uiBg(), 18)); LinearLayout heading = row(); weighted(heading, text(title, 21, uiInk())); heading.addView(button("×", false, d::dismiss)); shell.addView(heading); gap(shell, 10); shell.addView(body);
+        Dialog d = new Dialog(this); LinearLayout shell = column(); padding(shell, 22, 16); shell.setBackground(shape(uiBg(), 18)); LinearLayout heading = row(); TextView headingText = text(title, 21, uiInk()); headingText.setSingleLine(); headingText.setEllipsize(TextUtils.TruncateAt.END); weighted(heading, headingText); heading.addView(button("×", false, d::dismiss)); shell.addView(heading); gap(shell, 10); shell.addView(body);
         body.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() { public void onChildViewAdded(View parent, View child) { themeDialog(child); } public void onChildViewRemoved(View parent, View child) {} }); themeDialog(body);
         ScrollView scroll = new ScrollView(this) {
             @Override protected void onMeasure(int width, int height) {
@@ -446,6 +445,20 @@ public final class NativeActivity extends Activity {
         }
         return body;
     }
+    private View bookCategories(LinkedHashSet<String> selected) {
+        LinearLayout body = column(), options = column(); options.setVisibility(View.GONE);
+        Button toggle = button("", false, () -> {});
+        Runnable summary = () -> toggle.setText(getString(R.string.category_summary, selected.isEmpty() ? "未分类" : getString(R.string.category_count, selected.size()), options.getVisibility() == View.VISIBLE ? "▴" : "▾"));
+        toggle.setContentDescription("展开或收起所属分类"); toggle.setOnClickListener(v -> { options.setVisibility(options.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE); summary.run(); });
+        settingRow(body, "所属分类", toggle); ((ViewGroup) body.getChildAt(0)).getChildAt(0).setOnClickListener(v -> toggle.performClick()); body.addView(options);
+        options.addView(text("可多选，第一项决定备份目录。", 13, uiMuted()));
+        for (JSONObject shelf : lib.shelves) if (!isBuiltinShelf(shelf.optString("id"))) {
+            String id = shelf.optString("id"); LinearLayout line = row(); weighted(line, text(shelf.optString("name"), 16, uiInk()));
+            CheckBox box = new CheckBox(this); box.setContentDescription("分类：" + shelf.optString("name")); box.setChecked(selected.contains(id)); line.addView(box, new LinearLayout.LayoutParams(dp(48), dp(44)));
+            line.setOnClickListener(v -> box.toggle()); box.setOnCheckedChangeListener((v, checked) -> { if (checked) selected.add(id); else selected.remove(id); summary.run(); }); options.addView(line);
+        }
+        summary.run(); return body;
+    }
     private void shelfEditor(JSONObject shelf) {
         LinearLayout body = column(); EditText name = input("书架名称", shelf == null ? "" : shelf.optString("name")); name.setContentDescription("书架名称"); settingRow(body, "名称", name); gap(body, 20);
         Dialog dialog = sheet(shelf == null ? "新建书架" : "管理书架", body);
@@ -458,14 +471,18 @@ public final class NativeActivity extends Activity {
         infoRow(body, "导入日期", book.optLong("added") > 0 ? android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", new Date(book.optLong("added"))).toString() : "—");
         infoRow(body, "页码", book.optInt("lastPageCount") > 0 ? book.optInt("lastPage", 1) + "/" + book.optInt("lastPageCount") : "—/—"); infoRow(body, "阅读进度", percent(book) + "%");
         EditText name = input("书籍名称", book.optString("title")); name.setContentDescription("书籍名称"); name.setSelectAllOnFocus(true); settingRow(body, "书籍名称", name);
-        LinkedHashSet<String> memberships = new LinkedHashSet<>(Library.shelfIds(book)); body.addView(text("所属分类", 16, uiInk())); body.addView(categoryChoices(memberships)); gap(body, 8);
+        LinkedHashSet<String> memberships = new LinkedHashSet<>(Library.shelfIds(book)); body.addView(bookCategories(memberships)); gap(body, 8);
         Dialog dialog = sheet("书籍管理", body);
         body.addView(button("保存", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty()) return; set(book, "title", value.substring(0, Math.min(value.length(), 120))); Library.setShelfIds(book, memberships); dialog.dismiss(); organizeAndRefresh(); }));
         body.addView(button("导入图片作为封面", false, () -> { dialog.dismiss(); ensureStorage(() -> { coverTarget = book; Intent picker = Build.VERSION.SDK_INT >= 33 ? new Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*") : new Intent(Intent.ACTION_PICK).setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*"); try { startActivityForResult(picker, COVER); } catch (ActivityNotFoundException error) { toast("未找到可用的系统相册"); } }); }));
         body.addView(button("章节匹配设置", false, () -> { dialog.dismiss(); chapterSettings(book); }));
         body.addView(button("从书架移除", false, () -> { dialog.dismiss(); confirmRemove(Collections.singleton(book.optString("id"))); }));
     }
-    private void infoRow(LinearLayout body, String label, String value) { TextView text = text(value.isEmpty() ? "—" : value, 14, uiMuted()); text.setGravity(Gravity.END); text.setTextIsSelectable(true); settingRow(body, label, text); }
+    private void infoRow(LinearLayout body, String label, String value) {
+        LinearLayout line = row(); line.setMinimumHeight(dp(28)); padding(line, 0, 2);
+        line.addView(text(label, 14, uiMuted()), new LinearLayout.LayoutParams(dp(76), -2));
+        TextView text = text(value.isEmpty() ? "—" : value, 14, uiMuted()); text.setGravity(Gravity.END); text.setTextIsSelectable(true); weighted(line, text); body.addView(line);
+    }
     private View bookCover(JSONObject book, int width, int height) {
         FrameLayout cover = new FrameLayout(this); cover.setBackground(shape(BookIdentity.coverColor(book.optString("contentHash", book.optString("id"))), 7)); cover.setClipToOutline(true); cover.setLayoutParams(new LinearLayout.LayoutParams(dp(width), dp(height)));
         TextView name = text(book.optString("title"), 15, 0xff425047); name.setTypeface(Typeface.SERIF); name.setTag("preview"); name.setGravity(Gravity.CENTER); padding(name, 8, 8); name.setMaxLines(6); name.setEllipsize(TextUtils.TruncateAt.END); cover.addView(name, new FrameLayout.LayoutParams(-1, -1));
@@ -531,12 +548,19 @@ public final class NativeActivity extends Activity {
         Button grant = button(lib.canWrite() ? "已授权" : "去授权", false, () -> { d.dismiss(); ensureStorage(this::showShelf); }); settingRow(body, "文件读写权限", grant);
         settingRow(body, "UI 色系", button(uiThemeName(), false, () -> { d.dismiss(); uiThemeDialog(); }));
     }
-    private String uiThemeName() { switch (lib.state.optString("uiTheme", "forest")) { case "blue": return "雾蓝"; case "sand": return "暖沙"; case "rose": return "藕粉"; case "slate": return "石墨"; default: return "青绿"; } }
+    private String uiThemeName() { switch (lib.state.optString("uiTheme", "forest")) { case "blue": return "雾蓝"; case "sand": return "暖沙"; case "rose": return "藕粉"; case "slate": return "石墨"; case "lavender": return "藤紫"; default: return "青绿"; } }
     private void uiThemeDialog() {
-        LinearLayout body = column(); body.addView(text("只调整书架和管理界面的配色，阅读背景单独设置。", 14, uiMuted())); RadioGroup group = new RadioGroup(this); body.addView(group); Dialog d = sheet("UI 色系", body);
-        String[] keys = {"forest", "blue", "sand", "rose", "slate"}, names = {"青绿", "雾蓝", "暖沙", "藕粉", "石墨"}; Map<Integer,String> options = new HashMap<>();
-        for (int i = 0; i < keys.length; i++) { RadioButton choice = new RadioButton(this); choice.setId(View.generateViewId()); choice.setText(names[i]); choice.setTextSize(17); group.addView(choice); options.put(choice.getId(), keys[i]); if (keys[i].equals(lib.state.optString("uiTheme", "forest"))) group.check(choice.getId()); }
-        group.setOnCheckedChangeListener((v, id) -> { set(lib.state, "uiTheme", options.get(id)); d.dismiss(); persist(); showShelf(); });
+        LinearLayout body = column(); body.addView(text("只调整书架和管理界面的配色，阅读背景单独设置。", 14, uiMuted())); Dialog d = sheet("UI 色系", body);
+        String[] keys = {"forest", "blue", "sand", "rose", "slate", "lavender"}, names = {"青绿", "雾蓝", "暖沙", "藕粉", "石墨", "藤紫"};
+        int[] colors = {0xffe9ede3, 0xffe1eaf0, 0xffeee5d7, 0xffefe1e5, 0xffe5e6e8, 0xffe9e2ef};
+        for (int i = 0; i < keys.length; i++) {
+            if (i % 3 == 0) body.addView(row()); LinearLayout line = (LinearLayout) body.getChildAt(body.getChildCount() - 1); final int index = i;
+            boolean selected = keys[i].equals(lib.state.optString("uiTheme", "forest"));
+            Button choice = button((selected ? "✓ " : "") + names[i], false, () -> { set(lib.state, "uiTheme", keys[index]); d.dismiss(); persist(); showShelf(); });
+            choice.setContentDescription(names[i]); choice.setSelected(selected); choice.setTag("preview"); choice.setTextColor(0xff41464a);
+            GradientDrawable background = shape(colors[i], 9); background.setStroke(dp(selected ? 2 : 1), selected ? uiAccent() : 0x33626a70); choice.setBackground(background);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1); params.setMargins(dp(3), dp(3), dp(3), dp(3)); line.addView(choice, params);
+        }
     }
     private File selectedDirectory(Uri tree) throws IOException {
         String document = DocumentsContract.getTreeDocumentId(tree); int colon = document.indexOf(':'); if (colon < 0) throw new IOException("请选择手机或存储卡上的文件夹");
@@ -769,8 +793,13 @@ public final class NativeActivity extends Activity {
     private boolean beginPageDrag(int direction) {
         if (current == null || positioning || importing || !isPagedMode() || pagedReader == null || !pagedReader.ready() || !lib.prefs().optString("pageAnimation", "slide").equals("slide")) return false;
         if (!(pagedReader.canTurnPage(direction) || (direction > 0 ? chapter + 1 < chapters.size() : chapter > 0))) return false;
-        capture(); final int original = current.optInt("position"); final long readAt = current.optLong("lastRead"); final boolean atEnd = endReached;
-        return pagedReader.beginDrag(direction, () -> { previewingPage = true; turnPageNow(direction); }, () -> { try { jump(original); endReached = atEnd; set(current, "lastRead", readAt); positionUI(); } finally { previewingPage = false; } }, () -> turnPageNow(direction));
+        CharSequence adjacent = null;
+        if (!pagedReader.canTurnPage(direction)) {
+            BookParser.Chapter next = chapters.get(chapter + direction);
+            adjacent = styledSection(new DisplayText(source, next.start, next.end, true, next.heading), next,
+                dp((float) (lib.prefs().optDouble("paragraph", .4) * lib.prefs().optDouble("size", 18))), 0);
+        }
+        return pagedReader.beginDrag(direction, adjacent, () -> turnPageNow(direction));
     }
     private void turnPageNow(int direction) {
         if (current == null || positioning || importing) return;
@@ -831,7 +860,6 @@ public final class NativeActivity extends Activity {
         if (toc.isEmpty()) { LinearLayout empty = column(); empty.addView(text("未识别到章节", 16, uiMuted())); Dialog d = sheet("目录", empty); sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); }); empty.addView(button("返回阅读", false, d::dismiss)); return; }
         List<BookParser.Chapter> chapters = toc;
         LinearLayout body = column(); EditText search = input("搜索章节", ""); search.setTextSize(17); body.addView(search); ListView entries = new ListView(this); body.addView(entries, new LinearLayout.LayoutParams(-1, dp(getResources().getConfiguration().screenHeightDp / 2))); Dialog d = sheet("目录 · " + chapters.size() + " 章", body);
-        sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); });
         ChapterTree tree = new ChapterTree(chapters);
         collapsedChapters.clear(); collapsedChapters.addAll(tree.collapsedOutsidePath(currentTocIndex()));
         List<Integer> indices = new ArrayList<>();
@@ -871,8 +899,9 @@ public final class NativeActivity extends Activity {
         };
         entries.setAdapter(adapter);
         Runnable render = () -> { indices.clear(); indices.addAll(tree.visible(collapsedChapters, search.getText().toString())); adapter.notifyDataSetChanged(); fit.run(); };
-        LinearLayout tools = row(); weighted(tools, button("全部展开", false, () -> { collapsedChapters.clear(); render.run(); }));
-        weighted(tools, button("全部收起", false, () -> { for (int i = 0; i < tree.branch.length; i++) if (tree.branch[i]) collapsedChapters.add(i); render.run(); })); body.addView(tools, 1);
+        sheetAction(d, "expand_all", "全部展开", () -> { collapsedChapters.clear(); render.run(); });
+        sheetAction(d, "collapse_all", "全部收起", () -> { for (int i = 0; i < tree.branch.length; i++) if (tree.branch[i]) collapsedChapters.add(i); render.run(); });
+        sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); });
         search.addTextChangedListener(new TextWatcher() { public void beforeTextChanged(CharSequence s, int a, int c, int f) {} public void onTextChanged(CharSequence s, int a, int b, int c) { render.run(); } public void afterTextChanged(Editable e) {} }); render.run();
         entries.setSelection(Math.max(0, indices.indexOf(currentTocIndex())));
         body.addView(button("返回阅读", false, d::dismiss));
