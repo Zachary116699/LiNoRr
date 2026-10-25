@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f7f6f2">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'">
-  <title>LNReader · 留一点时间给阅读</title>
+  <title>LiNoRr · 留一点时间给阅读</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -27,7 +27,7 @@
   </defs></svg>
 
   <main id="shelfView" class="shell">
-    <header class="brand-row"><a class="brand" href="#" aria-label="LNReader 书架"><svg><use href="#i-book"/></svg><span>LNReader</span></a><span class="local-badge"><i></i> 离线 · 本地阅读</span></header>
+    <header class="brand-row"><a class="brand" href="#" aria-label="LiNoRr 书架"><svg><use href="#i-book"/></svg><span>LiNoRr</span></a><span class="local-badge"><i></i> 离线 · 本地阅读</span></header>
     <section class="shelf-heading"><div><span class="eyebrow">YOUR LITTLE LIBRARY</span><h1>我的书架<span class="title-dot">.</span></h1><p>把世界调成静音，读自己的故事。</p></div><button id="importBtn" class="primary"><svg><use href="#i-plus"/></svg>导入书籍</button></section>
     <section id="continueCard" class="continue-card" hidden></section>
     <div class="shelf-tabs-row"><nav id="tabs" aria-label="书架分类"></nav><button id="addShelf" class="icon-button" aria-label="新建书架"><svg><use href="#i-plus"/></svg></button><button id="manageShelf" class="icon-button" aria-label="管理当前书架"><svg><use href="#i-more"/></svg></button></div>
@@ -43,7 +43,7 @@
     <footer class="reader-footer"><div class="reading-position"><span id="positionLabel"></span><span id="readPercent"></span></div><input id="bookProgress" type="range" min="0" max="1000" aria-label="全书阅读进度"><div class="reader-actions"><button id="catalogBtn"><svg><use href="#i-list"/></svg><span>目录</span></button><button id="marksBtn"><svg><use href="#i-mark"/></svg><span>书签</span></button><button id="nightBtn"><svg><use href="#i-moon"/></svg><span>夜间</span></button><button id="settingsBtn"><span class="aa">Aa</span><span>阅读设置</span></button></div></footer>
   </section>
 
-  <dialog id="importDialog"><form method="dialog" class="sheet"><div class="sheet-heading"><div><span class="eyebrow">MAKE ROOM FOR STORIES</span><h2>把好书放进来</h2></div><button class="icon-button" aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><p class="muted">支持 UTF-8、GB18030、UTF-16，本地处理。</p><fieldset class="import-options"><legend>如何整理这次导入？</legend><label><input type="radio" name="grouping" value="separate" checked><span><b>每个 TXT 识别为一本书</b><small>适合批量导入不同的书</small></span></label><label><input type="radio" name="grouping" value="merged"><span><b>合并识别为一整本书</b><small>文件按名称自然排序，适合分卷小说</small></span></label></fieldset><label class="field-label">导入到书架<select id="importShelf"></select></label><div class="import-buttons"><button id="pickFiles" type="button" class="import-choice"><svg><use href="#i-book"/></svg><b>选择 TXT 文件</b><small>支持多选，可同时选封面图片</small></button><button id="pickFolder" type="button" class="import-choice"><svg><use href="#i-folder"/></svg><b>选择文件夹</b><small>包含子目录，自动匹配封面</small></button></div><p class="note">建议目录：Download/LNReader。文件夹导入可识别同名图片、cover、folder 或“封面”。单独选 TXT 无法读取未授权的相邻图片，请同时选择图片或改用文件夹导入。</p></form></dialog>
+  <dialog id="importDialog"><form method="dialog" class="sheet"><div class="sheet-heading"><div><span class="eyebrow">MAKE ROOM FOR STORIES</span><h2>把好书放进来</h2></div><button class="icon-button" aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><p class="muted">支持 UTF-8、GB18030、UTF-16，本地处理。</p><fieldset class="import-options"><legend>如何整理这次导入？</legend><label><input type="radio" name="grouping" value="separate" checked><span><b>每个 TXT 识别为一本书</b><small>适合批量导入不同的书</small></span></label><label><input type="radio" name="grouping" value="merged"><span><b>合并识别为一整本书</b><small>文件按名称自然排序，适合分卷小说</small></span></label></fieldset><label class="field-label">导入到书架<select id="importShelf"></select></label><div class="import-buttons"><button id="pickFiles" type="button" class="import-choice"><svg><use href="#i-book"/></svg><b>选择 TXT 文件</b><small>支持多选，可同时选封面图片</small></button><button id="pickFolder" type="button" class="import-choice"><svg><use href="#i-folder"/></svg><b>选择文件夹</b><small>包含子目录，自动匹配封面</small></button></div><p class="note">建议目录：Download/LiNoRr。文件夹导入可识别同名图片、cover、folder 或“封面”。单独选 TXT 无法读取未授权的相邻图片，请同时选择图片或改用文件夹导入。</p></form></dialog>
   <dialog id="catalogDialog" class="tall-dialog"><div class="sheet"><div class="sheet-heading"><h2>目录 <small id="chapterCount"></small></h2><button data-close class="icon-button" aria-label="关闭目录"><svg><use href="#i-close"/></svg></button></div><label class="search"><svg><use href="#i-search"/></svg><input id="chapterSearch" placeholder="搜索章节" type="search"></label><div id="chapterList" class="chapter-list"></div></div></dialog>
   <dialog id="settingsDialog"><div class="sheet">
     <div class="sheet-heading"><h2>阅读设置</h2><button data-close class="icon-button" aria-label="关闭阅读设置"><svg><use href="#i-close"/></svg></button></div>

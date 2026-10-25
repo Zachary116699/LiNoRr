@@ -27,7 +27,9 @@ final class Library {
         this.context = context;
         root = new File(context.getFilesDir(), "library"); if (!root.exists() && !root.mkdirs()) throw new IOException("无法创建书库");
         cache = new File(context.getCacheDir(), "books"); BackupFiles.mkdir(cache);
-        backup = new File(context.getSharedPreferences("storage", 0).getString("backupPath", new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "LNReader").getPath()));
+        BackupLocation.Choice location = BackupLocation.choose(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), context.getSharedPreferences("storage", 0).getString("backupPath", ""), canWrite());
+        backup = location.directory; maintenanceWarning = location.warning;
+        if (canWrite()) context.getSharedPreferences("storage", 0).edit().putString("backupPath", backup.getPath()).apply();
         File metadata = new File(root, "library.json");
         File portable = new File(backup, "userdata.json");
         if (canWrite() && portable.isFile()) { if (preferPortable || !metadata.isFile() || portable.lastModified() >= metadata.lastModified()) metadata = portable; portableReady = true; }
@@ -133,7 +135,9 @@ final class Library {
         portableReady = true;
     }
     /** Called on the serial save queue; pending older snapshots finish first. */
-    synchronized JSONObject removeBooks(JSONObject detached, Set<String> ids) throws Exception {
+    interface Progress { void update(int completed, int total, String label); }
+    synchronized JSONObject removeBooks(JSONObject detached, Set<String> ids) throws Exception { return removeBooks(detached, ids, (done, total, label) -> {}); }
+    synchronized JSONObject removeBooks(JSONObject detached, Set<String> ids, Progress progress) throws Exception {
         if (!canWrite()) throw new IOException("请先授权文件读写权限");
         maintenanceWarning = "";
         JSONArray kept = new JSONArray(), oldBooks = detached.optJSONArray("books"), archived = detached.optJSONArray("removedBooks");
@@ -141,8 +145,10 @@ final class Library {
         if (oldBooks != null) for (int i = 0; i < oldBooks.length(); i++) { JSONObject b = oldBooks.getJSONObject(i); if (ids.contains(b.optString("id"))) deleting.add(b); else kept.put(b); }
         if (archived != null) for (int i = 0; i < archived.length(); i++) deleting.add(archived.getJSONObject(i));
         Map<File, File> staged = new LinkedHashMap<>(); String before = detached.toString();
+        int stagedCount = 0;
         try {
             for (JSONObject b : deleting) {
+                progress.update(deleting.isEmpty() ? 0 : stagedCount++ * 25 / deleting.size(), 100, "正在移除：" + b.optString("title"));
                 if (!b.optString("directory").startsWith("book/")) continue;
                 boolean shared = false; for (int i = 0; i < kept.length(); i++) if (kept.getJSONObject(i).optString("directory").equals(b.optString("directory"))) shared = true;
                 File directory = directory(b); if (shared || !directory.isDirectory()) continue;
@@ -150,18 +156,21 @@ final class Library {
                 BackupFiles.child(new File(backup, "book"), b.optString("directory").substring(5));
                 File hidden = new File(backup, ".removed-" + UUID.randomUUID()); java.nio.file.Files.move(directory.toPath(), hidden.toPath()); staged.put(directory, hidden);
             }
-            set(detached, "books", kept); detached.remove("removedBooks"); saveSnapshot(detached.toString());
+            set(detached, "books", kept); detached.remove("removedBooks"); saveSnapshot(detached.toString()); progress.update(30, 100, "已更新书架记录，正在清理备份…");
         } catch (Exception error) {
             for (Map.Entry<File,File> pair : staged.entrySet()) if (pair.getValue().exists()) java.nio.file.Files.move(pair.getValue().toPath(), pair.getKey().toPath());
             atomic(new File(root, "library.json"), before.getBytes(StandardCharsets.UTF_8)); throw error;
         }
-        for (File directory : staged.values()) try { BackupFiles.deleteTree(directory); } catch (IOException ignored) { maintenanceWarning = "书籍已移除，部分临时文件未能清理，将在下次启动重试"; }
+        int cleaned = 0;
+        for (File directory : staged.values()) { try { BackupFiles.deleteTree(directory); } catch (IOException ignored) { maintenanceWarning = "书籍已移除，部分临时文件未能清理，将在下次启动重试"; } progress.update(30 + ++cleaned * 50 / staged.size(), 100, "正在清理备份文件…"); }
+        int cacheCount = 0;
         for (JSONObject b : deleting) {
+            progress.update(80 + cacheCount++ * 20 / Math.max(1, deleting.size()), 100, "正在清理缓存：" + b.optString("title"));
             String id = b.optString("id"); if (!id.matches("[a-f0-9]{24}")) continue;
             try { java.nio.file.Files.deleteIfExists(textFile(id).toPath()); java.nio.file.Files.deleteIfExists(new File(root, id + ".jpg").toPath()); } catch (IOException ignored) {}
             File[] cached = cache.listFiles(file -> file.getName().startsWith(id)); if (cached != null) for (File file : cached) try { BackupFiles.deleteTree(file); } catch (IOException ignored) {}
         }
-        warm = null; pruneEmptyCategories(backup); return detached;
+        warm = null; pruneEmptyCategories(backup); progress.update(100, 100, "移除完成"); return detached;
     }
     synchronized JSONObject relocate(File requested, JSONObject detached) throws Exception {
         if (!canWrite()) throw new IOException("请先授权文件读写权限");

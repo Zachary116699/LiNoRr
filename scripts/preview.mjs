@@ -14,4 +14,4 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': `${types[path.extname(target)] || 'application/octet-stream'}; charset=utf-8`, 'Cache-Control': 'no-store' }); res.end(content);
   } catch { res.writeHead(404); res.end('Not found'); }
 });
-server.listen(Number(process.env.PORT || 4173), '127.0.0.1', () => console.log('LNReader preview: http://localhost:' + server.address().port));
+server.listen(Number(process.env.PORT || 4173), '127.0.0.1', () => console.log('LiNoRr preview: http://localhost:' + server.address().port));

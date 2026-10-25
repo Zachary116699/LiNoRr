@@ -119,7 +119,7 @@ public final class StorageChecks extends GestureChecks {
             runOnMainSync(() -> call(activity, "changeBackupFolder", new Class<?>[]{Uri.class}, target)); idle(activity);
             check(library.backup.equals(moved) && !directory.exists() && new File(library.directory(book), "笔记.md").isFile(), "Backup migration lost extra files or retained old book");
             check(new Library(context).book(identity).has("pagination"), "Migration lost pagination/history");
-            Uri original = DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:Download/LNReader");
+            Uri original = DocumentsContract.buildTreeDocumentUri("com.android.externalstorage.documents", "primary:Download/LiNoRr");
             runOnMainSync(() -> call(activity, "changeBackupFolder", new Class<?>[]{Uri.class}, original)); idle(activity); check(library.backup.equals(oldRoot), "Restore default root failed");
             File fixture = new File(arguments.getString("fixture")); check(fixture.isFile(), "Large fixture missing");
             File bigDirectory = library.createDirectory("无分类", "蛊真人"); BackupFiles.copy(fixture, new File(bigDirectory, "蛊真人.txt"));

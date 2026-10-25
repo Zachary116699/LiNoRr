@@ -31,6 +31,10 @@ public class BookParserTest {
         assert personalToc.size() == 3 && personalToc.get(1).level == 2 && personalToc.get(2).level == 4;
         assert BookParser.parse("没有目录的小说。\n普通正文。\n").isEmpty();
         assert BookParser.parse("EP 只是正文中的缩写\nchapterhouse is a word\n").isEmpty();
+        for (String title : List.of("1.xxx", "102.xxx", "（10）xxx", "(10)xxx", "１２．全角标题")) { List<BookParser.Chapter> numbered = BookParser.parse(title + "\n正文内容。\n"); assert numbered.size() == 1 && numbered.get(0).title.equals(title) : title; }
+        for (String title : List.of("三十六、xxx", "三十六.xxx", "四十八 xxx", "（十）题名")) { assert BookParser.parse(title + "\n").isEmpty() : "Han numbers must be opt-in"; assert BookParser.parse(title + "\n", extended).size() == 1 : title; }
+        assert BookParser.parse("1.23是小数\n2026.10.26\n1234567.太长\n一百个人在这里。\n").isEmpty();
+        assert BookParser.parse("102.xxx\n", new BookParser.Rules(List.of("章"), List.of())).isEmpty();
         String longEpisode = "EP.1 原始标题\n" + "原文内容。\n".repeat(20000);
         assert BookParser.parse(longEpisode, extended).size() == 1;
         assert BookParser.sections(longEpisode, BookParser.parse(longEpisode, extended)).stream().noneMatch(c -> c.title.contains("续"));
@@ -45,6 +49,12 @@ public class BookParserTest {
         assert !new DisplayText("一段尚未结束", 2, 6, true, false).text.startsWith("　　");
         for (int i = 0; i < 10000; i++) { int color = BookIdentity.coverColor(Integer.toHexString(i)); int r = color >> 16 & 255, g = color >> 8 & 255, b = color & 255; assert Math.min(r, Math.min(g,b)) > 150; assert Math.max(r, Math.max(g,b)) - Math.min(r, Math.min(g,b)) <= 28; }
         Path temporary = Files.createTempDirectory("lnreader-backup-test");
+        Path downloads = temporary.resolve("Downloads"); Files.createDirectories(downloads);
+        Path oldRoot = downloads.resolve("LNReader"); Files.createDirectories(oldRoot.resolve("book/旧书")); Files.writeString(oldRoot.resolve("userdata.json"), "history"); Files.writeString(oldRoot.resolve("book/旧书/原文件.txt"), "原文");
+        assert BackupLocation.choose(downloads.toFile(), "", false).directory.toPath().equals(oldRoot.toRealPath());
+        BackupLocation.Choice migrated = BackupLocation.choose(downloads.toFile(), oldRoot.toString(), true); assert migrated.directory.getName().equals("LiNoRr") && !Files.exists(oldRoot); assert Files.readString(migrated.directory.toPath().resolve("book/旧书/原文件.txt")).equals("原文");
+        Files.createDirectories(oldRoot); Files.writeString(oldRoot.resolve("userdata.json"), "other history"); BackupLocation.Choice conflict = BackupLocation.choose(downloads.toFile(), "", true); assert conflict.directory.toPath().equals(oldRoot.toRealPath()) && !conflict.warning.isEmpty(); assert Files.readString(migrated.directory.toPath().resolve("userdata.json")).equals("history");
+        Path customRoot = downloads.resolve("My Books"); assert BackupLocation.choose(downloads.toFile(), customRoot.toString(), true).directory.equals(customRoot.toFile().getCanonicalFile());
         try { byte[] original = {(byte) 0xff, (byte) 0xfe, 0x2d, 0x4e, 13, 0, 10, 0}; Path from = temporary.resolve("源.txt"), to = temporary.resolve("book/无分类/原名.txt"); Files.write(from, original); BackupFiles.copy(from.toFile(), to.toFile()); assert Arrays.equals(original, Files.readAllBytes(to)); assert BackupFiles.name("../a:b/c").equals(".._a_b_c"); boolean denied = false; try { BackupFiles.child(temporary.toFile(), "../outside"); } catch (java.io.IOException e) { denied = true; } assert denied; }
         finally { try (var files = Files.walk(temporary)) { files.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} }); } }
         verify(source);

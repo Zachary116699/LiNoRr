@@ -389,7 +389,7 @@ $('tryDemo').onclick = async () => {
     ['第二章 在路上', '走过小桥的时候，天光渐渐柔和下来。河面映着树影，有人在岸边慢慢收拾钓具。', '每一本书都是一条可以重新出发的路。你记得某个句子，某场雨，某个人停下来的背影。等到很久以后，它们依然在某个普通的日子里，悄悄照亮你。'],
     ['第三章 留白', '夜色一点一点落在窗台。合上书，房间里只剩下钟表轻轻走动的声音。', '故事没有结束，只是暂时停在了这里。下次打开时，书页还在，那个尚未抵达的远方也还在。愿你在文字之间，总能找到属于自己的片刻。']
   ];
-  const source = 'LNReader 阅读体验\n\n这是一段内置的原创试读。可用来体验目录、书签、字体和夜间模式，之后可以从书架移除。\n\n' + paragraphs.map(([title, a, b]) => title + '\n\n' + Array.from({ length: 5 }, () => a + '\n\n' + b).join('\n\n')).join('\n\n');
+  const source = 'LiNoRr 阅读体验\n\n这是一段内置的原创试读。可用来体验目录、书签、字体和夜间模式，之后可以从书架移除。\n\n' + paragraphs.map(([title, a, b]) => title + '\n\n' + Array.from({ length: 5 }, () => a + '\n\n' + b).join('\n\n')).join('\n\n');
   importTarget = 'default'; await importFiles({ files: [{ name: '文字之间 · 试读.txt', path: '文字之间 · 试读.txt', source: 'demo', size: source.length * 3, file: new File([source], '文字之间 · 试读.txt') }], mode: 'separate', name: '试读' });
   const book = state.books.find(b => b.sources.includes('文字之间 · 试读.txt')); if (book) openBook(book.id);
 };

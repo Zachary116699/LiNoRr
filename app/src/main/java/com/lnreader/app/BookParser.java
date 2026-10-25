@@ -6,20 +6,24 @@ import java.util.regex.*;
 
 /** Only source headings enter the TOC; bounded rendering windows have no invented titles. */
 public final class BookParser {
-    public static final int VERSION = 6;
+    public static final int VERSION = 7;
     public static final class Chapter {
         public final String title; public final int start, level; public int end; public boolean heading = true;
         Chapter(String title, int start, int level) { this.title = title; this.start = start; this.level = level; }
     }
     private static final String N = "[零〇○一二两兩三四五六七八九十百千万萬亿億壹贰叁肆伍陆柒捌玖拾佰仟\\d０-９]+";
+    private static final String HAN_DIGITS = "零〇○一二两兩三四五六七八九十百千万萬亿億壹贰叁肆伍陆柒捌玖拾佰仟";
+    private static final String HAN_NUMBER = "[" + HAN_DIGITS + "]+";
+    private static final Pattern NUMBER_HEADING = Pattern.compile("^(?:[0-9０-９]{1,6}[.．、]\\h*[^0-9０-９\\s].*|[（(][0-9０-９]{1,6}[）)]\\h*\\S.*)$");
+    private static final Pattern HAN_HEADING = Pattern.compile("^(?:" + HAN_NUMBER + "(?:[.．、]\\h*|\\h+)\\S.*|[（(]" + HAN_NUMBER + "[）)]\\h*\\S.*)$");
     private static final Pattern CN = Pattern.compile("^(?:第\\s*" + N + "\\s*([卷部篇章节節目话話回集幕场場折])|([卷部篇章节節目话話回集幕场場折])\\s*" + N + ").*$");
     private static final Pattern EN = Pattern.compile("^(volume|vol|book|part|chapter|chap|ch|episode|ep|section|sec|act|scene)\\s*\\.?\\s*(?:[0-9０-９]+|[ivxlcdm]+)(?=$|[\\s.．:：、\\-—)）\\p{IsHan}]).*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern EXTRA = Pattern.compile("^(?:序章|序言|序|楔子|引子|尾声|尾聲|终章|終章|结语|結語|后记|後記|番外(?:篇|章)?(?:\\s*" + N + ")?|prologue|epilogue|preface)(?:$|[\\s:：、.．\\-—].*)", Pattern.CASE_INSENSITIVE);
     private static final Pattern DECOR = Pattern.compile("^[=\\-*_#\\s【\\[（(]+|[=\\-*_#\\s】\\]）)]+$");
     private static final Pattern LEGACY_EN = Pattern.compile("^(chapter|part|book|volume)\\s+(?:\\d+|[ivxlcdm]+)\\b.*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern LEGACY_EXTRA = Pattern.compile("^(序章|序言|序|楔子|尾声|终章|结语|后记)(?:$|[\\s:：、.．-].*)");
-    public static final List<String> DEFAULT_KINDS = Arrays.asList("卷", "部", "篇", "章", "节", "目", "话", "回", "集", "Chapter", "Part", "Book", "Volume", "序言等");
-    public static final List<String> ALL_KINDS = Arrays.asList("卷", "部", "篇", "章", "节", "目", "话", "回", "集", "幕", "场", "折", "Chapter", "Part", "Book", "Volume", "EP.", "Episode", "Section", "Act", "Scene", "序言等");
+    public static final List<String> DEFAULT_KINDS = Arrays.asList("卷", "部", "篇", "章", "节", "目", "话", "回", "集", "Chapter", "Part", "Book", "Volume", "序言等", "数字编号");
+    public static final List<String> ALL_KINDS = Arrays.asList("卷", "部", "篇", "章", "节", "目", "话", "回", "集", "幕", "场", "折", "Chapter", "Part", "Book", "Volume", "EP.", "Episode", "Section", "Act", "Scene", "序言等", "数字编号", "汉字数字编号");
     public static final class Rule {
         public final String name; public final int level; final Pattern pattern;
         public Rule(String name, int level) {
@@ -33,6 +37,8 @@ public final class BookParser {
         public final Set<String> kinds; public final List<Rule> custom;
         public Rules(Collection<String> kinds, List<Rule> custom) { this.kinds = new LinkedHashSet<>(kinds); this.custom = custom; }
         public static Rules defaults() { return new Rules(DEFAULT_KINDS, Collections.emptyList()); }
+        boolean numberedCandidate(char first) { return kinds.contains("数字编号") && (Character.isDigit(first) || first == '(' || first == '（') || kinds.contains("汉字数字编号") && (HAN_DIGITS.indexOf(first) >= 0 || first == '(' || first == '（'); }
+        int numberedLevel(String original) { return kinds.contains("数字编号") && NUMBER_HEADING.matcher(original).matches() || kinds.contains("汉字数字编号") && HAN_HEADING.matcher(original).matches() ? 3 : -1; }
         int level(String clean) {
             Matcher cn = CN.matcher(clean), en = EN.matcher(clean);
             // Defaults deliberately retain the older, narrower grammar.
@@ -71,8 +77,8 @@ public final class BookParser {
             int end = text.indexOf('\n', cursor); if (end < 0) end = text.length(); int left = cursor, right = end;
             while (left < right && Character.isWhitespace(text.charAt(left))) left++;
             while (right > left && Character.isWhitespace(text.charAt(right - 1))) right--;
-            if (right > left && right - left <= 90 && (!rules.custom.isEmpty() || "第卷部篇章节節目话話回集幕场場折序楔引尾终終结結后後番vVbBpPcCeEsSaA#【[=(—-*".indexOf(text.charAt(left)) >= 0)) {
-                String original = text.substring(left, right), clean = DECOR.matcher(original).replaceAll(""); int level = rules.level(clean);
+            if (right > left && right - left <= 90 && (!rules.custom.isEmpty() || rules.numberedCandidate(text.charAt(left)) || "第卷部篇章节節目话話回集幕场場折序楔引尾终終结結后後番vVbBpPcCeEsSaA#【[=(—-*".indexOf(text.charAt(left)) >= 0)) {
+                String original = text.substring(left, right), clean = DECOR.matcher(original).replaceAll(""); int level = rules.numberedLevel(original); if (level < 0) level = rules.level(clean);
                 if (level >= 0) headings.add(new Chapter(original, cursor, level));
             }
             cursor = end + 1;

@@ -59,7 +59,9 @@ final class InteractionChecks {
         t.runOnMainSync(() -> call(a, "openDrawer", new Class<?>[]{})); Dialog drawer = (Dialog) get(a, "drawer"); View drawerRoot = drawer.getWindow().getDecorView();
         t.runOnMainSync(() -> click(drawerRoot, "编辑书架")); t.waitForIdleSync(); tap(t, find(drawerRoot, "重命名QA First")); t.waitForIdleSync(); Thread.sleep(160);
         shot(t, a, "rename-focus");
-        t.runOnMainSync(() -> { check(!find(drawerRoot, "拖动QA Second").isEnabled(), "Reordering remains enabled while renaming"); View input = find(drawerRoot, "书架改名输入框"); String ancestors = ""; for (ViewParent p = input.getParent(); p instanceof ViewGroup; p = p.getParent()) ancestors += p.getClass().getSimpleName() + ":" + ((ViewGroup) p).getDescendantFocusability() + "/"; check(input.hasFocus(), "Inline focus: focusable=" + input.isFocusable() + ", touch=" + input.isFocusableInTouchMode() + ", shown=" + input.isShown() + ", window=" + input.hasWindowFocus() + ", current=" + drawerRoot.findFocus() + ", ancestors=" + ancestors); ((EditText) input).setText("Discarded"); click(drawerRoot, "取消重命名"); }); t.waitForIdleSync(); check(first.optString("name").equals("QA First"), "Cancel saved the draft");
+        tap(t, find(drawerRoot, "书架改名输入框")); t.waitForIdleSync();
+        t.runOnMainSync(() -> { check(!find(drawerRoot, "拖动QA Second").isEnabled(), "Reordering remains enabled while renaming"); EditText input = (EditText) find(drawerRoot, "书架改名输入框"); check(input != null && input.hasFocus(), "Touching the name canceled editing"); input.setText(""); });
+        t.sendStringSync("Discarded"); t.runOnMainSync(() -> check(((EditText) find(drawerRoot, "书架改名输入框")).getText().toString().equals("Discarded"), "Real keyboard input failed")); tap(t, find(drawerRoot, "取消重命名")); t.waitForIdleSync(); check(first.optString("name").equals("QA First"), "Cancel saved the draft");
         t.runOnMainSync(() -> click(drawerRoot, "重命名QA First")); t.waitForIdleSync(); Thread.sleep(120);
         t.runOnMainSync(() -> ((EditText) find(drawerRoot, "书架改名输入框")).setText("Outside"));
         int[] origin = new int[2]; drawerRoot.getLocationOnScreen(origin); long at = SystemClock.uptimeMillis();
@@ -67,8 +69,28 @@ final class InteractionChecks {
         t.waitForIdleSync(); t.runOnMainSync(() -> check(find(drawerRoot, "书架改名输入框") == null && first.optString("name").equals("QA First"), "Outside tap did not cancel rename"));
         t.runOnMainSync(() -> click(drawerRoot, "重命名QA First")); t.waitForIdleSync(); Thread.sleep(120);
         t.runOnMainSync(() -> { ((EditText) find(drawerRoot, "书架改名输入框")).setText("QA Second"); click(drawerRoot, "确认重命名"); check(first.optString("name").equals("QA First"), "Duplicate category name was accepted"); ((EditText) find(drawerRoot, "书架改名输入框")).setText("QA Renamed"); }); shot(t, a, "inline-rename");
-        t.runOnMainSync(() -> click(drawerRoot, "确认重命名")); settle(t, a);
+        tap(t, find(drawerRoot, "确认重命名")); settle(t, a);
         check(drawer.isShowing() && first.optString("name").equals("QA Renamed") && one.optString("directory").startsWith("book/QA Renamed/") && new File(lib.directory(one), "original.txt").isFile(), "Inline commit or renamed backup migration failed");
-        t.runOnMainSync(() -> { check(find(drawerRoot, "拖动QA Renamed").isEnabled(), "Drag was not restored after rename"); drawer.dismiss(); });
+        t.runOnMainSync(() -> { check(find(drawerRoot, "拖动QA Renamed").isEnabled(), "Drag was not restored after rename"); click(drawerRoot, "重命名QA Renamed"); }); t.waitForIdleSync();
+        tap(t, find(drawerRoot, "书架改名输入框")); t.runOnMainSync(() -> ((EditText) find(drawerRoot, "书架改名输入框")).setText("QA Enter")); t.sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER); settle(t, a);
+        check(first.optString("name").equals("QA Enter") && one.optString("directory").startsWith("book/QA Enter/"), "Hardware Enter did not commit rename"); t.runOnMainSync(drawer::dismiss);
+        shelf(t, a, "all"); t.runOnMainSync(() -> { View root = a.getWindow().getDecorView(); EditText search = (EditText) find(root, "搜索书名或文件名"); if (!search.isShown()) click(root, "展开或收起筛选排序"); search.setText("NoMatches"); check(find(root, "清空搜索").isEnabled(), "Clear search remained disabled"); click(root, "搜索书籍"); }); Thread.sleep(220);
+        check(((List<?>) get(a, "filteredBooks")).isEmpty(), "Search fixture did not filter"); tap(t, find(a.getWindow().getDecorView(), "清空搜索")); Thread.sleep(220);
+        t.runOnMainSync(() -> { View root = a.getWindow().getDecorView(); check(((List<?>) get(a, "filteredBooks")).size() == 2 && !find(root, "清空搜索").isEnabled(), "Clear search did not reset filtering and disable itself");
+            ImageView toggle = (ImageView) find(root, "切换列表或网格显示"); int color = ((android.graphics.Paint) get(toggle.getDrawable(), "paint")).getColor(); toggle.performClick(); check(((android.graphics.Paint) get(toggle.getDrawable(), "paint")).getColor() == color, "View toggle lost the active UI color"); });
+        batchProgress(t, a, lib);
+    }
+    private static void batchProgress(Instrumentation t, NativeActivity a, Library lib) throws Exception {
+        Class<?> entry = Class.forName("com.lnreader.app.NativeActivity$Entry"); Constructor<?> ctor = entry.getDeclaredConstructor(android.net.Uri.class, String.class, long.class); ctor.setAccessible(true); List<Object> entries = new ArrayList<>();
+        File input = new File(a.getCacheDir(), "batch-input"); BackupFiles.mkdir(input);
+        for (int i = 0; i < 20; i++) { File file = new File(input, "Batch-" + i + ".txt"); BackupFiles.write(file, ("第一章 Batch " + i + "\n" + "批量导入的正文内容。\n".repeat(4000)).getBytes(StandardCharsets.UTF_8)); entries.add(ctor.newInstance(android.net.Uri.fromFile(file), file.getName(), file.length())); }
+        t.runOnMainSync(() -> { put(a, "grouping", "separate"); put(a, "importShelf", "default"); ((Set<?>) get(a, "importShelves")).clear(); call(a, "showBusy", new Class<?>[]{String.class}, "批量导入进度测试"); });
+        ((ExecutorService) get(a, "io")).execute(() -> call(a, "importEntries", new Class<?>[]{List.class, String.class, String.class, JSONObject.class}, entries, "Batch", "", null));
+        boolean captured = false; for (int i = 0; i < 500 && (boolean) get(a, "importing"); i++) { if (!captured && ((ProgressBar) get(a, "busyProgress")).getProgress() > 0) { shot(t, a, "batch-progress"); captured = true; } Thread.sleep(20); } settle(t, a);
+        check(lib.books.size() == 22 && !((ProgressBar) get(a, "busyProgress")).isIndeterminate() && ((ProgressBar) get(a, "busyProgress")).getProgress() == 40, "Batch import did not complete determinate progress");
+        Set<String> ids = new HashSet<>(); for (JSONObject book : lib.books) if (book.optString("title").startsWith("Batch-")) ids.add(book.optString("id"));
+        t.runOnMainSync(() -> call(a, "performRemove", new Class<?>[]{Set.class, Runnable.class}, ids, null)); settle(t, a);
+        check(lib.books.size() == 2 && ((ProgressBar) get(a, "busyProgress")).getProgress() == 100 && !((ProgressBar) get(a, "busyProgress")).isIndeterminate(), "Batch removal did not complete determinate progress");
+        for (String id : ids) check(lib.book(id) == null, "Removed book remains in metadata"); BackupFiles.deleteTree(input);
     }
 }

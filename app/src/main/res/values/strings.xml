@@ -1,4 +1,5 @@
 <resources>
+    <string name="app_name">LiNoRr</string>
     <string name="book_count">%1$d 本书</string>
     <string name="selection_count">%1$d 本书/已选%2$d本</string>
     <string name="book_progress">已读 %1$d%%</string>
