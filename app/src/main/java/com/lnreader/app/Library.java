@@ -52,6 +52,19 @@ final class Library {
         JSONObject defaults = defaultPrefs(); for (Iterator<String> keys = defaults.keys(); keys.hasNext();) { String key = keys.next(); if (!prefs.has(key)) set(prefs, key, defaults.opt(key)); }
         if (state.optJSONArray("removedBooks") != null && state.optJSONArray("removedBooks").length() == 0) state.remove("removedBooks");
         for (JSONObject shelf : shelves) if (shelf.optString("id").equals("default")) set(shelf, "name", "无分类");
+        Set<String> valid = new HashSet<>(); for (JSONObject shelf : shelves) if (!shelf.optString("id").equals("default")) valid.add(shelf.optString("id"));
+        for (JSONObject book : books) { List<String> ids = shelfIds(book); ids.removeIf(id -> !valid.contains(id)); setShelfIds(book, ids); }
+    }
+    /** Ordered membership is portable; the first category owns the single physical copy. */
+    static List<String> shelfIds(JSONObject book) {
+        LinkedHashSet<String> result = new LinkedHashSet<>(); JSONArray ids = book.optJSONArray("shelfIds");
+        if (ids != null) { for (int i = 0; i < ids.length(); i++) { String id = ids.optString(i); if (!id.isEmpty() && !id.equals("default")) result.add(id); } }
+        else { String id = book.optString("shelf"); if (!id.isEmpty() && !id.equals("default")) result.add(id); }
+        return new ArrayList<>(result);
+    }
+    static void setShelfIds(JSONObject book, Collection<String> ids) {
+        LinkedHashSet<String> unique = new LinkedHashSet<>(ids); unique.remove("default"); unique.remove("");
+        set(book, "shelfIds", new JSONArray(unique)); set(book, "shelf", unique.isEmpty() ? "default" : unique.iterator().next());
     }
     static void migrateDefaults(JSONObject prefs) {
         if (prefs.optInt("defaultsVersion") >= 2) return;
@@ -87,6 +100,7 @@ final class Library {
             JSONArray categories = detached.optJSONArray("shelves"), items = detached.optJSONArray("books");
             if (items != null) for (int i = 0; i < items.length(); i++) {
                 JSONObject b = items.getJSONObject(i); String shelf = "无分类";
+                setShelfIds(b, shelfIds(b));
                 if (categories != null) for (int j = 0; j < categories.length(); j++) { JSONObject s = categories.getJSONObject(j); if (s.optString("id").equals(b.optString("shelf")) && !s.optString("id").equals("default")) shelf = s.optString("name"); }
                 File existing = null; if (!b.optString("directory").isEmpty()) { existing = directory(b); if (!existing.isDirectory()) existing = null; }
                 if (existing == null) {
@@ -114,7 +128,7 @@ final class Library {
     private static void pruneEmptyCategories(File backup) { File[] categories = new File(backup, "book").listFiles(); if (categories != null) for (File category : categories) { String[] children = category.list(); if (category.isDirectory() && children != null && children.length == 0) category.delete(); } }
     void applyPaths(JSONObject detached) {
         JSONArray updated = detached.optJSONArray("books");
-        if (updated != null) for (int i = 0; i < updated.length(); i++) { JSONObject copy = updated.optJSONObject(i), b = book(copy.optString("id")); if (b != null) for (String key : new String[]{"directory", "parts", "organizedTitle", "directoryName"}) if (copy.has(key)) set(b, key, copy.opt(key)); }
+        if (updated != null) for (int i = 0; i < updated.length(); i++) { JSONObject copy = updated.optJSONObject(i), b = book(copy.optString("id")); if (b != null) for (String key : new String[]{"directory", "parts", "organizedTitle", "directoryName", "shelfIds", "shelf"}) if (copy.has(key)) set(b, key, copy.opt(key)); }
         if (detached.has("removedBooks")) set(state, "removedBooks", detached.opt("removedBooks"));
         portableReady = true;
     }
@@ -154,7 +168,8 @@ final class Library {
         File target = requested.getCanonicalFile(), oldRoot = backup.getCanonicalFile();
         if (target.equals(oldRoot)) return detached;
         if (target.getPath().startsWith(oldRoot.getPath() + File.separator) || oldRoot.getPath().startsWith(target.getPath() + File.separator)) throw new IOException("请选择与当前书库互不包含的文件夹");
-        BackupFiles.mkdir(target); if (new File(target, "userdata.json").exists()) throw new IOException("目标文件夹已有书库，请选择空文件夹，避免覆盖");
+        BackupFiles.mkdir(target); File metadata = new File(target, "userdata.json"); byte[] previousMetadata = null;
+        if (metadata.exists()) { if (!emptyPortable(target)) throw new IOException("目标文件夹已有书库，请选择空文件夹，避免覆盖"); previousMetadata = read(new AtomicFile(metadata).openRead(), 32_000_000); }
         List<File> created = new ArrayList<>(), originals = new ArrayList<>(); JSONArray books = detached.optJSONArray("books");
         try {
             if (books != null) for (int i = 0; i < books.length(); i++) {
@@ -165,12 +180,16 @@ final class Library {
             }
             atomic(new File(target, "userdata.json"), detached.toString().getBytes(StandardCharsets.UTF_8));
             if (!context.getSharedPreferences("storage", 0).edit().putString("backupPath", target.getPath()).commit()) throw new IOException("无法保存备份路径");
-        } catch (Exception error) { for (File dir : created) BackupFiles.deleteTree(dir); java.nio.file.Files.deleteIfExists(new File(target, "userdata.json").toPath()); throw error; }
+        } catch (Exception error) { for (File dir : created) BackupFiles.deleteTree(dir); if (previousMetadata == null) java.nio.file.Files.deleteIfExists(metadata.toPath()); else atomic(metadata, previousMetadata); throw error; }
         backup = target; portableReady = true; maintenanceWarning = "";
         try { saveSnapshot(detached.toString()); } catch (IOException error) { maintenanceWarning = "已迁移至新文件夹，应用内元数据镜像未能更新"; }
         // Only files managed by this library are removed from the previous root.
         for (File directory : originals) try { BackupFiles.deleteTree(directory); } catch (IOException error) { maintenanceWarning = "已迁移至新文件夹，旧目录有文件未能清理"; }
         try { java.nio.file.Files.deleteIfExists(new File(oldRoot, "userdata.json").toPath()); } catch (IOException error) { maintenanceWarning = "已迁移至新文件夹，旧目录有文件未能清理"; } pruneEmptyCategories(oldRoot); return detached;
+    }
+    static boolean emptyPortable(File folder) {
+        try { JSONObject data = new JSONObject(new String(read(new AtomicFile(new File(folder, "userdata.json")).openRead(), 32_000_000), StandardCharsets.UTF_8)); JSONArray books = data.optJSONArray("books"), removed = data.optJSONArray("removedBooks"); return books != null && books.length() == 0 && (removed == null || removed.length() == 0); }
+        catch (Exception error) { return false; }
     }
     void cleanupPending() { if (!canWrite()) return; File[] files = backup.listFiles(f -> f.getName().matches("\\.removed-[a-f0-9-]{36}")); if (files != null) for (File file : files) try { BackupFiles.deleteTree(file); } catch (IOException ignored) {} }
     static BookParser.Rules chapterRules(JSONObject book) {

@@ -22,6 +22,14 @@ final class ReaderIcon extends Drawable {
         paint.setStyle(Paint.Style.STROKE);
         Path p = new Path();
         switch (kind) {
+            case "search":
+                canvas.drawCircle(10, 10, 7, paint); canvas.drawLine(15, 15, 22, 22, paint); break;
+            case "drag":
+                paint.setStyle(Paint.Style.FILL); for (int x = 8; x <= 16; x += 8) for (int y = 5; y <= 19; y += 7) canvas.drawCircle(x, y, 1.3f, paint); break;
+            case "edit":
+                p.moveTo(4, 16); p.lineTo(16, 4); p.lineTo(20, 8); p.lineTo(8, 20); p.lineTo(3, 21); p.close(); canvas.drawPath(p, paint); canvas.drawLine(13, 7, 17, 11, paint); break;
+            case "trash":
+                canvas.drawLine(3, 5, 21, 5, paint); canvas.drawLine(9, 2, 15, 2, paint); p.moveTo(5, 5); p.lineTo(6, 22); p.lineTo(18, 22); p.lineTo(19, 5); canvas.drawPath(p, paint); canvas.drawLine(10, 9, 10, 18, paint); canvas.drawLine(14, 9, 14, 18, paint); break;
             case "shelf":
                 canvas.drawLine(2, 21, 22, 21, paint); canvas.drawRoundRect(3, 4, 8, 19, 1, 1, paint); canvas.drawRoundRect(10, 3, 14, 19, 1, 1, paint); p.moveTo(16, 5); p.lineTo(20, 4); p.lineTo(23, 18); p.lineTo(19, 19); p.close(); canvas.drawPath(p, paint); break;
             case "grid":

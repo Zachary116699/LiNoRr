@@ -24,6 +24,9 @@ final class PagedReaderView extends View {
     private float leading = 1.5f;
     private final Listener listener;
     private Bitmap previousPage;
+    private Bitmap previewPage;
+    private boolean dragging;
+    private Runnable dragCommit;
     private ValueAnimator animator;
     private float fraction = 1;
     private int direction;
@@ -99,7 +102,28 @@ final class PagedReaderView extends View {
         });
         animator.start();
     }
-    private void recycleSnapshot() { if (previousPage != null) { previousPage.recycle(); previousPage = null; } fraction = 1; invalidate(); }
+    boolean beginDrag(int direction, Runnable preview, Runnable restore, Runnable commit) {
+        finishAnimation(); if (!ready() || getWidth() <= 0 || getHeight() <= 0) return false;
+        Bitmap before = null, after = null;
+        try {
+            before = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888); draw(new Canvas(before));
+            try { preview.run(); after = Bitmap.createBitmap(getWidth(), getHeight(), Bitmap.Config.ARGB_8888); draw(new Canvas(after)); }
+            finally { restore.run(); }
+            previousPage = before; previewPage = after; this.direction = direction; fraction = 0; dragging = true; dragCommit = commit; invalidate(); return true;
+        } catch (OutOfMemoryError error) { if (before != null) before.recycle(); if (after != null) after.recycle(); return false; }
+    }
+    void drag(float pixels) { if (dragging) { fraction = Math.max(0, Math.min(1, pixels / Math.max(1, getWidth()))); invalidate(); } }
+    void endDrag(boolean commit) {
+        if (!dragging) return; dragging = false; Runnable action = dragCommit; dragCommit = null;
+        if (commit && action != null) action.run();
+        float target = commit ? 1 : 0;
+        if (!ValueAnimator.areAnimatorsEnabled()) { recycleSnapshot(); return; }
+        animator = ValueAnimator.ofFloat(fraction, target); animator.setDuration(Math.max(45, Math.round(120 * Math.abs(target - fraction))));
+        animator.setInterpolator(new android.view.animation.DecelerateInterpolator()); animator.addUpdateListener(value -> { fraction = (float) value.getAnimatedValue(); invalidate(); });
+        animator.addListener(new android.animation.AnimatorListenerAdapter() { @Override public void onAnimationEnd(android.animation.Animator animation) { recycleSnapshot(); } }); animator.start();
+    }
+    float dragFraction() { return fraction; }
+    private void recycleSnapshot() { dragging = false; dragCommit = null; if (previousPage != null) { previousPage.recycle(); previousPage = null; } if (previewPage != null) { previewPage.recycle(); previewPage = null; } fraction = 1; invalidate(); }
     private void finishAnimation() { if (animator != null) { animator.cancel(); animator = null; } recycleSnapshot(); }
     @Override protected void onDetachedFromWindow() { finishAnimation(); super.onDetachedFromWindow(); }
     boolean ready() { return layout != null && !starts.isEmpty(); }
@@ -115,7 +139,7 @@ final class PagedReaderView extends View {
         if (previousPage != null && fraction < 1) {
             canvas.drawBitmap(previousPage, -direction * fraction * getWidth(), 0, null);
             canvas.save(); canvas.translate(direction * (1 - fraction) * getWidth(), 0);
-            drawPage(canvas); canvas.restore();
+            if (previewPage != null) canvas.drawBitmap(previewPage, 0, 0, null); else drawPage(canvas); canvas.restore();
         } else drawPage(canvas);
     }
     private void drawPage(Canvas canvas) {

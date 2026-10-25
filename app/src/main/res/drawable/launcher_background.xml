@@ -1,3 +1,1 @@
-<shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <gradient android:angle="270" android:startColor="#16B3E7" android:endColor="#7AD1E8" />
-</shape>
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android" android:src="@drawable/launcher_back" android:gravity="fill" android:filter="true" />

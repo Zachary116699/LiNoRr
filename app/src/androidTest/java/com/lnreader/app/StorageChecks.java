@@ -17,9 +17,9 @@ import java.util.function.BooleanSupplier;
 import static com.lnreader.app.Library.*;
 
 /** Device-level transactions and layout-cache checks on the guarded QA emulator. */
-public final class StorageChecks extends Instrumentation {
+public final class StorageChecks extends GestureChecks {
     private Bundle arguments;
-    @Override public void onCreate(Bundle args) { super.onCreate(args); arguments = args; start(); }
+    @Override public void onCreate(Bundle args) { arguments = args; super.onCreate(args); }
     private static void check(boolean value, String reason) { if (!value) throw new AssertionError(reason); }
     private Object field(Object target, String name) { try { Field f = target.getClass().getDeclaredField(name); f.setAccessible(true); return f.get(target); } catch (Exception e) { throw new RuntimeException(e); } }
     private void field(Object target, String name, Object value) { try { Field f = target.getClass().getDeclaredField(name); f.setAccessible(true); f.set(target, value); } catch (Exception e) { throw new RuntimeException(e); } }
@@ -37,6 +37,7 @@ public final class StorageChecks extends Instrumentation {
         waitUntil(() -> onMain(() -> field(activity, "pagedReader") != null && ((PagedReaderView) field(activity, "pagedReader")).ready() && !(Boolean) field(activity, "importing")));
     }
     @Override public void onStart() {
+        if ("true".equals(arguments.getString("gesture"))) { super.onStart(); return; }
         Bundle output = new Bundle();
         try {
             check("LNReader_QA".equals(arguments.getString("guard")), "Dedicated emulator guard required");
@@ -66,6 +67,15 @@ public final class StorageChecks extends Instrumentation {
             check(renamedA.isFile() && renamedB.isFile(), "Removing backup deleted outside source");
             BackupFiles.write(first, a); BackupFiles.write(second, b); importBook(activity, entries, "QA多文件");
             JSONObject book = library.books.get(0); File directory = library.directory(book);
+            runOnMainSync(() -> { library.shelves.add(json("id", "qa-a", "name", "QA-A")); library.shelves.add(json("id", "qa-b", "name", "QA-B")); Library.setShelfIds(book, Arrays.asList("qa-a", "qa-b")); call(activity, "organizeAndRefresh", new Class<?>[]{}); }); idle(activity);
+            check(book.optString("directory").startsWith("book/QA-A/") && Library.shelfIds(book).size() == 2, "Multi-category book did not use its first category");
+            File primary = library.directory(book); check(Arrays.equals(a, read(new FileInputStream(new File(primary, first.getName())), 10000)), "Classification changed source bytes");
+            check(onMain(() -> (Boolean) call(activity, "inShelf", new Class<?>[]{JSONObject.class, String.class}, book, "qa-b")), "Secondary category does not include book");
+            runOnMainSync(() -> { Collections.reverse(library.shelves); call(activity, "organizeAndRefresh", new Class<?>[]{}); }); idle(activity); check(library.directory(book).equals(primary), "Drawer order changed primary category");
+            runOnMainSync(() -> { Library.setShelfIds(book, Collections.singletonList("qa-b")); library.shelves.removeIf(s -> s.optString("id").equals("qa-a")); call(activity, "organizeAndRefresh", new Class<?>[]{}); }); idle(activity);
+            check(book.optString("directory").startsWith("book/QA-B/") && !primary.exists(), "Primary category removal did not move the single backup");
+            runOnMainSync(() -> { Library.setShelfIds(book, Collections.emptyList()); library.shelves.removeIf(s -> s.optString("id").equals("qa-b")); call(activity, "organizeAndRefresh", new Class<?>[]{}); }); idle(activity); directory = library.directory(book);
+            check(book.optString("directory").startsWith("book/无分类/"), "Last category removal did not restore unclassified storage");
             check(identity.equals(book.optString("id")) && BookIdentity.coverColor(hash) == BookIdentity.coverColor(book.optString("contentHash")), "Remove/reimport changed identity/color");
             check(book.optInt("position") == 0 && book.getJSONArray("marks").length() == 0, "Deleted history resurrected");
             runOnMainSync(() -> set(book, "chapterRules", json("kinds", new JSONArray().put("EP."), "custom", new JSONArray())));
@@ -79,6 +89,17 @@ public final class StorageChecks extends Instrumentation {
             check(Math.max(size.outWidth, size.outHeight) <= 720 && originalCover.isFile(), "Cover resize or original failed");
             runOnMainSync(() -> { set(book, "position", 18); set(book, "lastRead", 123456789L); set(book, "marks", new JSONArray().put(json("offset", 18, "title", "EP.01 第一段", "date", 123L))); call(activity, "persist", new Class<?>[]{}); });
             open(activity, book); waitUntil(() -> onMain(() -> field(activity, "pageTotals") != null));
+            Thread.sleep(350); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, 0));
+            final int dragOrigin = book.optInt("position"); long gestureAt = SystemClock.uptimeMillis();
+            readerTouch(activity, MotionEvent.ACTION_DOWN, .8f, gestureAt, gestureAt); readerTouch(activity, MotionEvent.ACTION_MOVE, .3f, gestureAt, gestureAt + 100); Thread.sleep(100);
+            check(onMain(() -> { float f = ((PagedReaderView) field(activity, "pagedReader")).dragFraction(); return f > .45f && f < .55f; }), "Page does not follow the held finger");
+            check(book.optInt("position") == dragOrigin, "Preview prematurely changed the reading position");
+            runOnMainSync(() -> { PagedReaderView view = (PagedReaderView) field(activity, "pagedReader"); Bitmap image = Bitmap.createBitmap(view.getWidth(), view.getHeight(), Bitmap.Config.ARGB_8888); view.draw(new Canvas(image)); try (OutputStream stream = new FileOutputStream(new File(context.getCacheDir(), "drag-half.png"))) { image.compress(Bitmap.CompressFormat.PNG, 100, stream); } catch (IOException e) { throw new RuntimeException(e); } image.recycle(); });
+            readerTouch(activity, MotionEvent.ACTION_MOVE, .78f, gestureAt, gestureAt + 240); readerTouch(activity, MotionEvent.ACTION_UP, .78f, gestureAt, gestureAt + 500); Thread.sleep(180);
+            check(book.optInt("position") == dragOrigin, "Dragging back still turned the page");
+            gestureAt = SystemClock.uptimeMillis(); readerTouch(activity, MotionEvent.ACTION_DOWN, .8f, gestureAt, gestureAt); readerTouch(activity, MotionEvent.ACTION_MOVE, .3f, gestureAt, gestureAt + 100); readerTouch(activity, MotionEvent.ACTION_UP, .3f, gestureAt, gestureAt + 400); Thread.sleep(180);
+            check(book.optInt("position") > dragOrigin, "Committed cross-chapter drag did not advance");
+            runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, dragOrigin));
             int[] totals = ((int[]) field(activity, "pageTotals")).clone(); String layoutKey = book.getJSONObject("pagination").getString("key");
             runOnMainSync(() -> call(activity, "back", new Class<?>[]{}));
             File[] cached = library.cache.listFiles(); if (cached != null) for (File file : cached) if (file.getName().startsWith(identity)) file.delete();
@@ -114,11 +135,15 @@ public final class StorageChecks extends Instrumentation {
                 many.add(json("id", String.format(Locale.ROOT, "%024x", 2000 + i), "title", title, "shelf", "default", "directory", library.relative(dir), "directoryName", dir.getName(), "organizedTitle", title, "parts", new JSONArray().put(title + ".txt"), "position", 0, "length", content.length(), "marks", new JSONArray(), "added", 2000 + i));
             }
             runOnMainSync(() -> { library.books.addAll(many); library.shelves.add(json("id", "qa-category", "name", "QA分类")); field(activity, "active", "all"); call(activity, "showShelf", new Class<?>[]{}); call(activity, "persist", new Class<?>[]{}); });
+            runOnMainSync(() -> { for (int i = 0; i < many.size(); i++) set(many.get(i), "lastRead", i + 1); field(activity, "active", "recent"); call(activity, "showShelf", new Class<?>[]{}); check(((List<?>) field(activity, "filteredBooks")).size() == 90, "Recent shelf is not limited to 90"); call(activity, "renderCards", new Class<?>[]{Set.class}, Collections.singleton(many.get(0).optString("id"))); check(((List<?>) field(activity, "filteredBooks")).isEmpty(), "Search bypassed the latest-90 limit"); for (JSONObject item : many) item.remove("lastRead"); field(activity, "active", "all"); call(activity, "showShelf", new Class<?>[]{}); });
             waitForIdleSync(); check(onMain(() -> ((GridView) field(activity, "bookGrid")).getAdapter().getCount() == 15), "Shelf page is not limited to 15 books");
             runOnMainSync(() -> { ((GridView) field(activity, "bookGrid")).getChildAt(0).performLongClick(); named(activity.getWindow().getDecorView(), "全选当前筛选").performClick(); check(((Set<?>) field(activity, "selectedBooks")).size() == 702, "Select-all stopped at the visible 15-book page"); named(activity.getWindow().getDecorView(), "取消选择").performClick(); });
             waitUntil(() -> { try { return new JSONObject(Library.fastText(new File(library.backup, "userdata.json"))).getJSONArray("books").length() == 702; } catch (Exception e) { return false; } });
             output.putString("stream", "PASS: byte-preserving backup, content dedup, actual removal, stable cover, per-book rules, persistent pagination, source independence, movable backup and 15-book pages. cold_ms=" + coldMs + " disk_ms=" + diskMs + " toc=" + cold.toc.size() + "\n");
             finish(Activity.RESULT_OK, output);
         } catch (Throwable error) { output.putString("stream", "FAIL: " + android.util.Log.getStackTraceString(error)); finish(Activity.RESULT_CANCELED, output); }
+    }
+    private void readerTouch(NativeActivity activity, int action, float x, long down, long at) {
+        runOnMainSync(() -> { ReaderSurface view = (ReaderSurface) field(activity, "readerSurface"); MotionEvent event = MotionEvent.obtain(down, at, action, view.getWidth() * x, view.getHeight() * .5f, 0); view.dispatchTouchEvent(event); event.recycle(); });
     }
 }

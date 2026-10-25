@@ -7,7 +7,7 @@ import android.widget.ScrollView;
 
 /** Tap zones leave visible controls and long-press text selection alone. */
 final class ReaderSurface extends FrameLayout {
-    interface Listener { void tap(float fraction); void turn(int direction); }
+    interface Listener { void tap(float fraction); void turn(int direction); default boolean beginDrag(int direction) { return false; } default void drag(float pixels) {} default void endDrag(boolean commit) {} }
     private final Listener listener;
     private final boolean paged;
     private final int slop;
@@ -17,6 +17,10 @@ final class ReaderSurface extends FrameLayout {
     private long downAt;
     private boolean tracking, moved, atTop, atBottom;
     private boolean multiTouch;
+    private boolean dragging;
+    private int dragDirection;
+    private float dragPrevious;
+    private boolean returning;
     private VelocityTracker velocity;
     private void releaseVelocity() { if (velocity != null) { velocity.recycle(); velocity = null; } }
     @Override protected void onDetachedFromWindow() { releaseVelocity(); super.onDetachedFromWindow(); }
@@ -32,7 +36,7 @@ final class ReaderSurface extends FrameLayout {
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
-            downX = event.getX(); downY = event.getY(); downAt = event.getEventTime(); moved = false; multiTouch = false;
+            downX = event.getX(); downY = event.getY(); downAt = event.getEventTime(); moved = false; multiTouch = false; dragging = false;
             releaseVelocity(); velocity = VelocityTracker.obtain();
             tracking = !inside(header, downX, downY) && !inside(footer, downX, downY);
             atTop = scroll == null || !scroll.canScrollVertically(-1);
@@ -41,12 +45,26 @@ final class ReaderSurface extends FrameLayout {
         if (!tracking) { releaseVelocity(); return super.dispatchTouchEvent(event); }
         if (velocity != null) velocity.addMovement(event);
         if (event.getPointerCount() > 1) multiTouch = true;
-        if (action == MotionEvent.ACTION_CANCEL) { releaseVelocity(); tracking = false; return super.dispatchTouchEvent(event); }
+        if (action == MotionEvent.ACTION_CANCEL) { if (dragging) listener.endDrag(false); dragging = false; releaseVelocity(); tracking = false; return super.dispatchTouchEvent(event); }
         float dx = event.getX() - downX, dy = event.getY() - downY;
         if (Math.abs(dx) > slop || Math.abs(dy) > slop || event.getPointerCount() > 1) moved = true;
+        if (dragging && multiTouch) { listener.endDrag(false); dragging = false; tracking = false; cancelChildren(event); return true; }
+        if (action == MotionEvent.ACTION_MOVE && paged && !multiTouch) {
+            if (!dragging && Math.abs(dx) >= Math.max(slop * 1.25f, 14 * getResources().getDisplayMetrics().density) && Math.abs(dx) > Math.abs(dy) * 1.1f) {
+                dragDirection = dx < 0 ? 1 : -1; dragging = listener.beginDrag(dragDirection); dragPrevious = Math.max(0, -dragDirection * dx); returning = false; if (dragging) cancelChildren(event);
+            }
+            if (dragging) { float distance = Math.max(0, -dragDirection * dx), delta = distance - dragPrevious; if (delta > slop * .25f) returning = false; else if (delta < -slop * .25f) returning = true; dragPrevious = distance; listener.drag(distance); return true; }
+        }
         if (action == MotionEvent.ACTION_UP) {
-            float speed = 0;
-            if (velocity != null) { velocity.computeCurrentVelocity(1000); speed = Math.abs(velocity.getXVelocity()); releaseVelocity(); }
+            float speed = 0, signedSpeed = 0;
+            if (velocity != null) { velocity.computeCurrentVelocity(1000); signedSpeed = velocity.getXVelocity(); speed = Math.abs(signedSpeed); releaseVelocity(); }
+            if (dragging) {
+                float distance = -dragDirection * dx;
+                boolean reversed = dragDirection * signedSpeed > ViewConfiguration.get(getContext()).getScaledMinimumFlingVelocity() * 2;
+                float delta = distance - dragPrevious; if (delta > slop * .25f) returning = false; else if (delta < -slop * .25f) returning = true;
+                listener.drag(Math.max(0, distance)); listener.endDrag(!reversed && !returning && distance >= Math.max(slop * 1.25f, 14 * getResources().getDisplayMetrics().density));
+                dragging = false; tracking = false; return true;
+            }
             if (multiTouch) return super.dispatchTouchEvent(event);
             if (!moved && event.getEventTime() - downAt < ViewConfiguration.getLongPressTimeout()) {
                 cancelChildren(event); listener.tap(event.getX() / Math.max(1, getWidth())); return true;
