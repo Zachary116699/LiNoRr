@@ -3,6 +3,8 @@ package com.lnreader.app;
 import android.app.*;
 import android.content.*;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.*;
 import android.view.*;
@@ -27,11 +29,18 @@ final class PrivacyChecks {
     private static boolean anyDialog(NativeActivity a) { for (Dialog d : ((Map<Dialog,?>) get(a, "dialogShells")).keySet()) if (d.isShowing()) return true; return false; }
     private static Set<String> drawerIds(View root) { ListView list = (ListView) find(root, "书架分类列表"); Set<String> ids = new HashSet<>(); for (int i = 0; i < list.getAdapter().getCount(); i++) ids.add(((JSONObject) list.getAdapter().getItem(i)).optString("id")); return ids; }
     private static void settle(Instrumentation t, NativeActivity a) throws Exception { for (int i = 0; i < 200; i++) { boolean[] busy = {true}; t.runOnMainSync(() -> busy[0] = (boolean) get(a, "importing")); if (!busy[0]) { t.waitForIdleSync(); Thread.sleep(120); return; } Thread.sleep(50); } throw new AssertionError("Operation timed out"); }
-    private static void shelf(Instrumentation t, NativeActivity a, String id) { t.runOnMainSync(() -> { put(a, "active", id); put(a, "query", ""); put(a, "searchDraft", ""); call(a, "showShelf", new Class<?>[]{}); }); t.waitForIdleSync(); }
+    private static void shelf(Instrumentation t, NativeActivity a, String id) { t.runOnMainSync(() -> { put(a, "active", id); put(a, "query", ""); put(a, "searchDraft", ""); call(a, "showShelf", new Class<?>[]{}); }); t.waitForIdleSync(); SystemClock.sleep(120); }
     private static boolean in(NativeActivity a, JSONObject book, String id) { return (boolean) call(a, "inShelf", new Class<?>[]{JSONObject.class, String.class}, book, id); }
     private static void tap(Instrumentation t, View v) { int[] p = new int[2]; t.runOnMainSync(() -> { v.getLocationOnScreen(p); p[0] += v.getWidth() / 2; p[1] += v.getHeight() / 2; }); long down = SystemClock.uptimeMillis(); for (int action : new int[]{MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP}) { MotionEvent e = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, p[0], p[1], 0); e.setSource(InputDevice.SOURCE_TOUCHSCREEN); check(t.getUiAutomation().injectInputEvent(e, true), "Tap failed"); e.recycle(); } }
     private static void doubleTitle(Instrumentation t, NativeActivity a) throws Exception { View title = find(a.getWindow().getDecorView(), "LiNoRr"); tap(t, title); Thread.sleep(65); tap(t, title); t.waitForIdleSync(); Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 80); check(!anyDialog(a), "Double tap opened About"); }
     private static void photo(Instrumentation t, NativeActivity a, String name) throws Exception { t.waitForIdleSync(); Thread.sleep(180); Bitmap b = t.getUiAutomation().takeScreenshot(); try (OutputStream out = new FileOutputStream(new File(a.getCacheDir(), name + ".png"))) { b.compress(Bitmap.CompressFormat.PNG, 100, out); } b.recycle(); }
+    private static void coverBorder(View view) {
+        FrameLayout cover = (FrameLayout) view; int w = cover.getWidth(), h = cover.getHeight(); check(w > 0 && h > 0 && cover.getForeground() != null, "Cover outline missing");
+        Bitmap bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888); cover.draw(new Canvas(bitmap));
+        check(cover.getForeground().getBounds().equals(new Rect(0, 0, w, h)), "Cover outline extends outside its original size");
+        check(cover.getChildAt(1).getWidth() == w && cover.getChildAt(1).getHeight() == h, "Outline changed the image size");
+        check(bitmap.getPixel(0, h / 2) != bitmap.getPixel(w / 2, h / 2), "Cover edge is indistinguishable from its fill"); bitmap.recycle();
+    }
     static void run(Instrumentation t, NativeActivity a) throws Exception {
         settle(t, a); check(!(boolean) get(a, "privacyMode"), "Cold launch restored privacy mode");
         Library lib = (Library) get(a, "lib"); check(Environment.isExternalStorageManager(), "QA file permission required");
@@ -43,6 +52,10 @@ final class PrivacyChecks {
         for (JSONObject book : Arrays.asList(publicBook, secret)) { String path = "book/" + book.optString("title"); File dir = new File(backup, path); BackupFiles.mkdir(dir); BackupFiles.write(new File(dir, "original.txt"), ("第一章 测试\n" + book.optString("title") + "\n正文。\n").getBytes(StandardCharsets.UTF_8)); set(book, "directory", path); set(book, "parts", new JSONArray().put("original.txt")); set(book, "sources", new JSONArray().put(book.optString("title") + ".txt")); }
         t.runOnMainSync(() -> { lib.books.clear(); lib.books.add(publicBook); lib.books.add(secret); lib.shelves.clear(); lib.shelves.add(json("id", "default", "name", "未分类")); lib.shelves.add(json("id", "hidden-only", "name", "Hidden Shelf")); lib.shelves.add(json("id", "mixed", "name", "Mixed Shelf")); lib.shelves.add(json("id", "empty", "name", "Empty Shelf")); });
         shelf(t, a, "all"); String theme = lib.state.optString("uiTheme"); int day = (int) call(a, "shelfBg", new Class<?>[]{});
+        Thread.sleep(150); t.runOnMainSync(() -> { coverBorder(find(a.getWindow().getDecorView(), "Public QA封面")); click(a.getWindow().getDecorView(), "切换列表或网格显示"); }); t.waitForIdleSync(); Thread.sleep(120);
+        t.runOnMainSync(() -> { coverBorder(find(a.getWindow().getDecorView(), "Public QA封面")); click(a.getWindow().getDecorView(), "切换列表或网格显示");
+            View cover = (View) call(a, "bookCover", new Class<?>[]{JSONObject.class, int.class, int.class}, publicBook, 100, 140); cover.measure(View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(420, View.MeasureSpec.EXACTLY)); cover.layout(0, 0, 300, 420); coverBorder(cover);
+        }); t.waitForIdleSync();
         t.runOnMainSync(() -> {
             check(in(a, publicBook, "all") && !in(a, secret, "all") && !in(a, secret, "recent") && !in(a, secret, "mixed"), "Private book visible in ordinary shelves");
             check(((List<?>) get(a, "filteredBooks")).size() == 1, "Ordinary count includes private books");
@@ -53,7 +66,7 @@ final class PrivacyChecks {
             put(a, "query", "Hidden QA"); call(a, "scheduleSearch", new Class<?>[]{});
         }); Thread.sleep(220); t.runOnMainSync(() -> check(((List<?>) get(a, "filteredBooks")).isEmpty(), "Search reveals hidden title"));
         shelf(t, a, "all"); tap(t, find(a.getWindow().getDecorView(), "LiNoRr")); Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 160);
-        t.runOnMainSync(() -> { Dialog d = shown(a); View root = d.getWindow().getDecorView(); check(find(root, "关于 LiNoRr") != null && find(root, "0.9.17") != null && find(root, "超绝可爱大水笔 & ChatGPT 6.1 Sol") != null && find(root, "应用图标") instanceof ImageView && ((ImageView) find(root, "应用图标")).getDrawable() != null, "About metadata or app icon missing"); });
+        t.runOnMainSync(() -> { Dialog d = shown(a); View root = d.getWindow().getDecorView(); check(find(root, "关于 LiNoRr") != null && find(root, "0.9.18") != null && find(root, "超绝可爱大水笔 & ChatGPT 6.1 Sol") != null && find(root, "应用图标") instanceof ImageView && ((ImageView) find(root, "应用图标")).getDrawable() != null, "About metadata or app icon missing"); });
         photo(t, a, "about"); t.runOnMainSync(() -> shown(a).dismiss());
         doubleTitle(t, a); check((boolean) get(a, "privacyMode"), "Double tap did not enter privacy");
         t.runOnMainSync(() -> { View title = find(a.getWindow().getDecorView(), "LiNoRr"), eye = find(a.getWindow().getDecorView(), "退出隐私模式"), night = find(a.getWindow().getDecorView(), "日夜间模式切换"); check(eye.getLeft() >= title.getRight() && eye.getLeft() - title.getRight() < 8 * a.getResources().getDisplayMetrics().density && night.getLeft() - eye.getRight() > 8 * a.getResources().getDisplayMetrics().density, "Eye is grouped with tools instead of title"); });
@@ -73,7 +86,7 @@ final class PrivacyChecks {
         JSONObject imported = lib.books.stream().filter(b -> b.optString("title").equals("Private import QA")).findFirst().orElseThrow(); check(imported.optBoolean("private"), "Imported privacy flag missing"); check(lib.partFiles(imported).get(0).isFile(), "Private import did not back up text");
         input.delete(); check(!lib.document(imported).text.isEmpty(), "Deleted original broke private backup");
         t.runOnMainSync(() -> { set(lib.prefs(), "night", true); call(a, "showShelf", new Class<?>[]{}); }); photo(t, a, "privacy-night");
-        t.runOnMainSync(() -> { check((int) call(a, "shelfBg", new Class<?>[]{}) == 0xff2a0d16, "Private night palette missing"); call(a, "about", new Class<?>[]{}); }); photo(t, a, "about-night");
+        t.runOnMainSync(() -> { check((int) call(a, "shelfBg", new Class<?>[]{}) == 0xff2d2025, "Private night palette missing"); call(a, "about", new Class<?>[]{}); }); photo(t, a, "about-night");
         t.runOnMainSync(() -> { shown(a).dismiss(); set(lib.prefs(), "night", false); call(a, "showShelf", new Class<?>[]{}); });
         Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); a.startActivity(home); Thread.sleep(250); a.startActivity(new Intent(a, NativeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)); Thread.sleep(350); check((boolean) get(a, "privacyMode") && !a.isFinishing(), "Background return reset privacy");
         t.runOnMainSync(() -> { put(a, "active", "hidden-only"); put(a, "query", "Hidden QA"); ((Set<String>) get(a, "selectedBooks")).add(secret.optString("id")); put(a, "selectionMode", true); call(a, "showShelf", new Class<?>[]{}); });

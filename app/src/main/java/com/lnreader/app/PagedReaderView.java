@@ -90,6 +90,10 @@ final class PagedReaderView extends View {
             layout = adjacentFrame.layout; starts = adjacentFrame.starts; selectPage(); changed();
         } else relayout();
     }
+    void seekOffset(int offset) {
+        clearSelection(); finishAnimation(); adjacentFrame = null; desiredOffset = Math.max(0, Math.min(text.length(), offset));
+        if (layout == null || starts.isEmpty()) relayout(); else { selectPage(); changed(); }
+    }
     int offset() { return layout == null || starts.isEmpty() ? desiredOffset : layout.getLineStart(starts.get(page)); }
     @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) { desiredOffset = offset(); relayout(); listener.layoutChanged(); }
     private void relayout() {

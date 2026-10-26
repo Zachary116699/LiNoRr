@@ -78,6 +78,10 @@ public final class NativeActivity extends Activity {
     private boolean toolsExpanded;
     // Session only: never restore this flag from userdata or Activity saved state.
     private boolean privacyMode, importPrivate;
+    private boolean seekPreview, seekFramePending;
+    private JSONObject seekOriginal;
+    private int seekTarget, jumpGeneration;
+    private final Runnable seekFrame = () -> { seekFramePending = false; if (seekPreview && current != null) jump(seekTarget); };
     private final Runnable aboutTask = this::about;
     private long titleTapAt;
     private final List<JSONObject> filteredBooks = new ArrayList<>();
@@ -171,7 +175,7 @@ public final class NativeActivity extends Activity {
     }
     private final Runnable exportTask = () -> {
         if (lib == null) return;
-        if (importing) { handler.postDelayed(this.exportTask, 200); return; }
+        if (importing || seekPreview) { handler.postDelayed(this.exportTask, 200); return; }
         String snapshot = lib.snapshot(); Library target = lib; saveIo.execute(() -> { if (target != lib) return; try { target.saveSnapshot(snapshot); } catch (Exception e) { toast("保存失败：" + e.getMessage()); } });
     };
     private void ensureStorage(Runnable action) {
@@ -206,6 +210,7 @@ public final class NativeActivity extends Activity {
     }
 
     private void showShelf() {
+        finishSeek(false);
         if (!privacyMode && !shelfVisible(active)) active = "all";
         recentSortView = json("sort", "lastRead", "ascending", false);
         if (active.equals("recent")) { shelfView().remove("sort"); shelfView().remove("ascending"); }
@@ -224,7 +229,7 @@ public final class NativeActivity extends Activity {
         brand.addView(shelfIcon("settings", "书架设置", this::shelfSettings), new LinearLayout.LayoutParams(dp(42), dp(44)));
         brand.addView(new View(this), new LinearLayout.LayoutParams(dp(6), 1));
         brand.addView(shelfIcon("import", "导入书籍", () -> ensureStorage(this::importDialog)), new LinearLayout.LayoutParams(dp(42), dp(44)));
-        if (privacyMode) { int ink = shelfDark() ? 0xffffd5e0 : 0xffffedf2; logo.setTextColor(ink); for (int i = 0; i < brand.getChildCount(); i++) if (brand.getChildAt(i) instanceof ImageButton) ((ReaderIcon) ((ImageButton) brand.getChildAt(i)).getDrawable()).color(ink); }
+        if (privacyMode) { int ink = shelfDark() ? 0xffffe5ed : 0xff35141e; logo.setTextColor(ink); for (int i = 0; i < brand.getChildCount(); i++) if (brand.getChildAt(i) instanceof ImageButton) ((ReaderIcon) ((ImageButton) brand.getChildAt(i)).getDrawable()).color(ink); }
         outer.addView(brand);
         getWindow().setStatusBarColor(headerColor);
         content = column(); padding(content, 20, 10); outer.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -405,7 +410,7 @@ public final class NativeActivity extends Activity {
     }
     private boolean shelfDark() { return lib != null && lib.prefs().optBoolean("night", false); }
     private int[] uiPalette() {
-        if (privacyMode) return new int[]{0xfffff1f3, 0xff8b1736, 0xffb51f49, 0xff2a0d16, 0xff4a1226, 0xffff8faf};
+        if (privacyMode) return new int[]{0xfffdf4f6, 0xffbf7f90, 0xff9b294b, 0xff2d2025, 0xff51303c, 0xffe6a1b6};
         String name = lib == null ? "forest" : lib.state.optString("uiTheme", "forest");
         switch (name) {
             case "blue": return new int[]{0xfff3f6f8, 0xffe1eaf0, 0xff4b667b, 0xff1f262c, 0xff2c3741, 0xffb3cbdd};
@@ -517,7 +522,7 @@ public final class NativeActivity extends Activity {
             cover.setBackground(shape(BookIdentity.coverColor(b.optString("contentHash", id)), 7));
             if (b.optString("contentHash").isEmpty()) coverIo.submit(() -> { try { String hash = BookIdentity.fingerprint(lib.partFiles(b)); handler.post(() -> { set(b, "contentHash", hash); if (book == b) cover.setBackground(shape(BookIdentity.coverColor(hash), 7)); persist(); }); } catch (Exception ignored) {} });
             progressText.setText(b.optLong("lastRead") > 0 ? getString(R.string.book_progress, percent(b)) : "未读"); more.setContentDescription("管理" + name);
-            boolean selected = selectionMode && selectedBooks.contains(id); setSelected(selected); setBackground(selected ? shape(blend(shelfBg(), uiAccent(), .18f), 8) : null); cover.setForeground(selected ? shape(0x26000000, 7) : null);
+            boolean selected = selectionMode && selectedBooks.contains(id); setSelected(selected); setBackground(selected ? shape(blend(shelfBg(), uiAccent(), .18f), 8) : null); cover.setForeground(coverOutline(selected));
             check.setVisibility(selectionMode ? View.VISIBLE : View.GONE); check.setText(selected ? "✓" : ""); check.setBackground(shape(selected ? uiAccent() : 0x995b6257, 10));
             if (job != null) job.cancel(false); File file = lib.coverFile(b); if (!file.isFile()) return;
             String key = id + ":" + file.lastModified(); Bitmap cached = coverCache.get(key); if (cached != null) { image.setImageBitmap(cached); return; }
@@ -659,9 +664,14 @@ public final class NativeActivity extends Activity {
     }
     private View bookCover(JSONObject book, int width, int height) {
         FrameLayout cover = new FrameLayout(this); cover.setBackground(shape(BookIdentity.coverColor(book.optString("contentHash", book.optString("id"))), 7)); cover.setClipToOutline(true); cover.setLayoutParams(new LinearLayout.LayoutParams(dp(width), dp(height)));
+        cover.setForeground(coverOutline(false));
         TextView name = text(book.optString("title"), 15, 0xff425047); name.setTypeface(Typeface.SERIF); name.setTag("preview"); name.setGravity(Gravity.CENTER); padding(name, 8, 8); name.setMaxLines(6); name.setEllipsize(TextUtils.TruncateAt.END); cover.addView(name, new FrameLayout.LayoutParams(-1, -1));
         ImageView image = new ImageView(this); image.setScaleType(ImageView.ScaleType.CENTER_CROP); cover.addView(image, new FrameLayout.LayoutParams(-1, -1)); File file = lib.coverFile(book);
         if (file.isFile()) coverIo.execute(() -> { BitmapFactory.Options opts = new BitmapFactory.Options(); opts.inSampleSize = 2; Bitmap bitmap = BitmapFactory.decodeFile(file.getPath(), opts); if (bitmap != null) handler.post(() -> image.setImageBitmap(bitmap)); }); return cover;
+    }
+    private GradientDrawable coverOutline(boolean selected) {
+        GradientDrawable outline = shape(selected ? 0x26000000 : Color.TRANSPARENT, 7);
+        outline.setStroke(dp(1), blend(shelfBg(), uiAccent(), shelfDark() ? .50f : .32f)); return outline;
     }
     private void chapterSettings(JSONObject book) {
         LinearLayout body = column(); body.addView(text("仅影响这本书。选择要识别的标题名称，未选中的名称不会进入目录。", 14, uiMuted())); gap(body, 12);
@@ -820,6 +830,7 @@ public final class NativeActivity extends Activity {
         systemBars(show);
     }
     private void buildReader(int offset) {
+        finishSeek(false);
         ++paginationGeneration; pageTotals = null;
         if (indexTask != null) handler.removeCallbacks(indexTask);
         if (progressTask != null) handler.removeCallbacks(progressTask);
@@ -855,7 +866,7 @@ public final class NativeActivity extends Activity {
             FrameLayout.LayoutParams scrollParams = new FrameLayout.LayoutParams(-1, -1); scrollParams.topMargin = dp(48); scrollParams.bottomMargin = dp(32);
             surface.addView(readingScroll, scrollParams); readingBody = column(); padding(readingBody, 24, 10); readingScroll.addView(readingBody);
             readingScroll.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> { if (r - l != or - ol || b - t != ob - ot) schedulePageIndex(); });
-            readingScroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> { if (positioning) return; if (progressTask != null) handler.removeCallbacks(progressTask); progressTask = () -> { capture(); persist(); }; handler.postDelayed(progressTask, 250); });
+            readingScroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> { if (positioning || seekPreview) return; if (progressTask != null) handler.removeCallbacks(progressTask); progressTask = () -> { capture(); persist(); }; handler.postDelayed(progressTask, 250); });
         }
         readerHeader = row(); readerHeader.setBackgroundColor(readerBg()); padding(readerHeader, 6, 6); readerHeader.addView(readerIconButton("back", "返回书架", this::back), new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout titles = column(); TextView title = text(current.optString("title"), 16, readerInk()); title.setMaxLines(1); title.setEllipsize(TextUtils.TruncateAt.END); titles.addView(title);
@@ -880,9 +891,17 @@ public final class NativeActivity extends Activity {
         showControls(controlsVisible);
         progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             private void seek(SeekBar s) { jump((int) ((long) s.getProgress() * Math.max(0, source.length() - 1) / 1000)); persist(); }
-            public void onProgressChanged(SeekBar s, int p, boolean fromUser) { if (fromUser && !((ThumbSeekBar) s).isTouchTracking()) seek(s); }
-            public void onStartTrackingTouch(SeekBar s) {}
-            public void onStopTrackingTouch(SeekBar s) { if (((ThumbSeekBar) s).shouldCommit()) seek(s); }
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) {
+                if (!fromUser) return;
+                if (!((ThumbSeekBar) s).isTouchTracking()) { seek(s); return; }
+                if (seekPreview && ((ThumbSeekBar) s).isDraggingThumb()) { seekTarget = (int) ((long) p * Math.max(0, source.length() - 1) / 1000); if (!seekFramePending) { seekFramePending = true; handler.postDelayed(seekFrame, 16); } }
+            }
+            public void onStartTrackingTouch(SeekBar s) {
+                seekOriginal = json(); for (String key : new String[]{"position", "chapterTitle", "lastPage", "lastPageCount", "lastRead"}) if (current.has(key)) set(seekOriginal, key, current.opt(key));
+                set(seekOriginal, "sliderProgress", s.getProgress());
+                seekPreview = true; if (progressTask != null) handler.removeCallbacks(progressTask);
+            }
+            public void onStopTrackingTouch(SeekBar s) { finishSeek(((ThumbSeekBar) s).shouldCommit()); }
         });
         jump(offset);
     }
@@ -950,21 +969,37 @@ public final class NativeActivity extends Activity {
     }
     private void jump(int offset) {
         if (progressTask != null) handler.removeCallbacks(progressTask); positioning = true; offset = Math.max(0, Math.min(source.length() - 1, offset)); endReached = offset >= source.length() - 2;
+        int previous = chapter, generation = ++jumpGeneration;
         chapter = chapters.size() - 1; for (int i = 0; i < chapters.size(); i++) if (chapters.get(i).end > offset) { chapter = i; break; }
         BookParser.Chapter c = chapters.get(chapter); set(current, "position", offset); set(current, "chapterTitle", c.title); chapterLabel.setText(c.title);
         quietTitle.setText(c.title.isEmpty() ? current.optString("title") : c.title);
-        display = new DisplayText(source, c.start, c.end, true, c.heading);
-        SpannableString styled = styledSection(display, c, dp((float) (lib.prefs().optDouble("paragraph", .4) * lib.prefs().optDouble("size", 18))), Math.round((float) lib.prefs().optDouble("size", 18) * getResources().getDisplayMetrics().scaledDensity * 2));
-        if (isPagedMode()) {
-            pagedReader.content(styled, display.displayOffset(offset));
-            positioning = false; positionUI(); return;
+        boolean reuse = seekPreview && previous == chapter && display != null && (isPagedMode() ? pagedReader.ready() : readingText != null);
+        if (reuse && isPagedMode()) { pagedReader.seekOffset(display.displayOffset(offset)); positioning = false; positionUI(); return; }
+        if (!reuse) {
+            display = new DisplayText(source, c.start, c.end, true, c.heading);
+            SpannableString styled = styledSection(display, c, dp((float) (lib.prefs().optDouble("paragraph", .4) * lib.prefs().optDouble("size", 18))), Math.round((float) lib.prefs().optDouble("size", 18) * getResources().getDisplayMetrics().scaledDensity * 2));
+            if (isPagedMode()) {
+                pagedReader.content(styled, display.displayOffset(offset));
+                positioning = false; positionUI(); return;
+            }
+            readingBody.removeAllViews(); readingText = text("", (float) lib.prefs().optDouble("size", 18), readerInk()); readingText.setTypeface(readingTypeface()); readingText.setTextIsSelectable(true); readingText.setLineSpacing(0, (float) lib.prefs().optDouble("line", 1.4));
+            readingText.setText(styled); readingBody.addView(readingText, new LinearLayout.LayoutParams(-1, -2)); gap(readingBody, 20);
+            readingScroll.requestFocus();
+            readingText.setBreakStrategy(simpleBreakStrategy()); readingText.setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE); if (Build.VERSION.SDK_INT >= 28) readingText.setFallbackLineSpacing(false);
         }
-        readingBody.removeAllViews(); readingText = text("", (float) lib.prefs().optDouble("size", 18), readerInk()); readingText.setTypeface(readingTypeface()); readingText.setTextIsSelectable(true); readingText.setLineSpacing(0, (float) lib.prefs().optDouble("line", 1.4));
-        readingText.setText(styled); readingBody.addView(readingText, new LinearLayout.LayoutParams(-1, -2)); gap(readingBody, 20);
-        readingScroll.requestFocus();
-        readingText.setBreakStrategy(simpleBreakStrategy()); readingText.setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE); if (Build.VERSION.SDK_INT >= 28) readingText.setFallbackLineSpacing(false);
         int desired = offset; TextView target = readingText; DisplayText mapped = display;
-        readingText.post(() -> { if (readingText != target) return; if (target.getLayout() != null) { int local = mapped.displayOffset(desired); int y = desired <= c.start ? 0 : target.getTop() + target.getLayout().getLineTop(target.getLayout().getLineForOffset(local)); readingScroll.scrollTo(0, y); } positioning = false; positionUI(); });
+        readingText.post(() -> { if (readingText != target || generation != jumpGeneration) return; if (target.getLayout() != null) { int local = mapped.displayOffset(desired); int y = desired <= c.start ? 0 : target.getTop() + target.getLayout().getLineTop(target.getLayout().getLineForOffset(local)); readingScroll.scrollTo(0, y); } positioning = false; positionUI(); });
+    }
+    private void finishSeek(boolean commit) {
+        if (!seekPreview || current == null) return;
+        handler.removeCallbacks(seekFrame);
+        seekFramePending = false;
+        int offset = commit ? (int) ((long) progress.getProgress() * Math.max(0, source.length() - 1) / 1000) : seekOriginal.optInt("position");
+        jump(offset);
+        seekPreview = false;
+        if (!commit) progress.setProgress(seekOriginal.optInt("sliderProgress"));
+        if (!commit) for (String key : new String[]{"position", "chapterTitle", "lastPage", "lastPageCount", "lastRead"}) { if (seekOriginal.has(key)) set(current, key, seekOriginal.opt(key)); else current.remove(key); }
+        seekOriginal = null; positionUI(); persist();
     }
     private static SpannableString styledSection(DisplayText display, BookParser.Chapter section, int spacing, int indent) {
         String text = display.text; SpannableString styled = new SpannableString(text); int cursor = 0, line = 0;
@@ -1023,7 +1058,7 @@ public final class NativeActivity extends Activity {
         }
     }
     private void capture() {
-        if (current == null || positioning) return;
+        if (current == null || positioning || seekPreview) return;
         if (isPagedMode()) {
             if (pagedReader != null) set(current, "position", endReached ? source.length() - 1 : pageSourceOffset(pagedReader.offset()));
             set(current, "lastRead", System.currentTimeMillis()); positionUI(); return;
@@ -1037,7 +1072,7 @@ public final class NativeActivity extends Activity {
     }
     private void positionUI() {
         if (progressLabel == null || current == null) return;
-        progress.setProgress((int) (1000L * current.optInt("position") / Math.max(1, source.length())));
+        if (!((ThumbSeekBar) progress).isTouchTracking()) progress.setProgress((int) (1000L * current.optInt("position") / Math.max(1, source.length())));
         if (quietProgress != null) {
             int page = pageNumber, count = pageCount;
             if (!isPagedMode() && readingScroll != null && readingBody != null) {
@@ -1051,7 +1086,7 @@ public final class NativeActivity extends Activity {
             if (pageTotals != null) { set(current, "lastPage", pageTotals[chapter] + Math.min(page, pageTotals[chapter + 1] - pageTotals[chapter])); set(current, "lastPageCount", pageTotals[pageTotals.length - 1]); }
         }
     }
-    private void back() { capture(); persist(); if (progressTask != null) handler.removeCallbacks(progressTask); showShelf(); }
+    private void back() { finishSeek(false); capture(); persist(); if (progressTask != null) handler.removeCallbacks(progressTask); showShelf(); }
     private void catalog() {
         if (toc.isEmpty()) { LinearLayout empty = column(); empty.addView(text("未识别到章节", 16, uiMuted())); Dialog d = sheet("目录", empty); sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); }); empty.addView(button("返回阅读", false, d::dismiss)); return; }
         List<BookParser.Chapter> chapters = toc;
@@ -1367,6 +1402,6 @@ public final class NativeActivity extends Activity {
         }
         updateDeviceStatus();
     }
-    @Override protected void onStop() { handler.removeCallbacks(aboutTask); titleTapAt = 0; if (statusRegistered) { unregisterReceiver(statusReceiver); statusRegistered = false; } super.onStop(); }
+    @Override protected void onStop() { finishSeek(false); handler.removeCallbacks(aboutTask); titleTapAt = 0; if (statusRegistered) { unregisterReceiver(statusReceiver); statusRegistered = false; } super.onStop(); }
     @Override protected void onDestroy() { paginationGeneration++; if (statusRegistered) unregisterReceiver(statusReceiver); handler.removeCallbacksAndMessages(null); io.shutdownNow(); openIo.shutdownNow(); pageIo.shutdownNow(); coverIo.shutdownNow(); saveIo.shutdown(); super.onDestroy(); }
 }

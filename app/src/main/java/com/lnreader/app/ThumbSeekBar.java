@@ -19,6 +19,7 @@ final class ThumbSeekBar extends SeekBar {
         return area;
     }
     boolean isTouchTracking() { return tracking; }
+    boolean isDraggingThumb() { return tracking && moved; }
     boolean shouldCommit() { return commit && getProgress() != original; }
     @Override public boolean performClick() { return super.performClick(); }
     @Override public boolean onTouchEvent(MotionEvent event) {

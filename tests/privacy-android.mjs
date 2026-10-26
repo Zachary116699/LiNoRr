@@ -10,7 +10,7 @@ adb('shell','am','force-stop','com.lnreader.app');adb('shell','pm','clear','com.
 adb('shell','appops','set','--uid','com.lnreader.app','MANAGE_EXTERNAL_STORAGE','allow');
 const result=adb('shell','am','instrument','-w','-e','guard','LNReader_QA','-e','gesture','true','-e','privacy','true','com.lnreader.app.test/com.lnreader.app.StorageChecks').toString();
 assert.match(result,/PASS: privacy visibility/,result);console.log(result.trim());
-mkdirSync('artifacts',{recursive:true});for(const name of ['privacy-shelf','privacy-night','ordinary-shelf','about','about-night'])writeFileSync('artifacts/android-0.9.17-'+name+'.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/'+name+'.png'));
+mkdirSync('artifacts',{recursive:true});for(const name of ['privacy-shelf','privacy-night','ordinary-shelf','about','about-night'])writeFileSync('artifacts/android-0.9.18-'+name+'.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/'+name+'.png'));
 adb('shell','am','force-stop','com.lnreader.app');adb('shell','am','start','-W','-f','0x10008000','-n','com.lnreader.app/.NativeActivity');
 adb('shell','uiautomator','dump','/sdcard/privacy-cold.xml');const ui=adb('shell','cat','/sdcard/privacy-cold.xml').toString();
 assert.match(ui,/Public QA/);for(const hidden of ['Hidden QA','Private import QA','退出隐私模式','隐私书籍'])assert.ok(!ui.includes(hidden),'Cold launch leaked '+hidden);

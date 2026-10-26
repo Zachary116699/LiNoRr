@@ -33,6 +33,9 @@ public class GestureChecks extends Instrumentation {
         for (String mode : new String[]{"paged", "scroll"}) {
             runOnMainSync(() -> { set(lib.prefs(), "readingMode", mode); call(activity, "buildReader", new Class<?>[]{int.class}, 0); call(activity, "showControls", new Class<?>[]{boolean.class}, true); }); waitForIdleSync(); Thread.sleep(220);
             ThumbSeekBar bar = (ThumbSeekBar) get(activity, "progress"); int[] origin = new int[2]; float[] points = new float[4];
+            Bitmap debug = getUiAutomation().takeScreenshot(); try (OutputStream out = new FileOutputStream(new File(activity.getCacheDir(), "progress-before.png"))) { debug.compress(Bitmap.CompressFormat.PNG, 100, out); } debug.recycle();
+            check(activity.hasWindowFocus() && bar.isShown(), "Reader not focused for seeking: busy=" + get(activity, "importing") + " dialog=" + get(activity, "busyDialog"));
+            Object layout = mode.equals("paged") ? get(get(activity, "pagedReader"), "layout") : get(activity, "readingText");
             runOnMainSync(() -> { bar.getLocationOnScreen(origin); RectF thumb = bar.thumbArea(); points[0] = origin[0] + thumb.centerX(); points[1] = origin[1] + thumb.centerY(); points[2] = origin[0] + bar.getWidth() * .85f; points[3] = origin[0] + bar.getWidth() * .60f; });
             int before = book.optInt("position"); long at = SystemClock.uptimeMillis();
             inject(MotionEvent.ACTION_DOWN, points[2], points[1], at); inject(MotionEvent.ACTION_UP, points[2], points[1], at); Thread.sleep(80);
@@ -40,7 +43,12 @@ public class GestureChecks extends Instrumentation {
             at = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, points[2], points[1], at); inject(MotionEvent.ACTION_MOVE, points[0], points[1], at); inject(MotionEvent.ACTION_UP, points[0], points[1], at); Thread.sleep(80);
             check(book.optInt("position") == before && (boolean) get(activity, "controlsVisible"), "Track drag reached reader or sought: " + mode);
             at = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, points[0], points[1], at); inject(MotionEvent.ACTION_MOVE, points[3], points[1], at); Thread.sleep(70);
-            check(book.optInt("position") == before && bar.getProgress() > 300, "Thumb did not preview without committing: " + mode);
+            check(book.optInt("position") > before && bar.getProgress() > 300 && (boolean) get(activity, "seekPreview"), "Thumb did not render a live preview: " + mode + " position=" + book.optInt("position") + " progress=" + bar.getProgress() + " preview=" + get(activity, "seekPreview") + " dragging=" + bar.isDraggingThumb() + " target=" + get(activity, "seekTarget") + " pending=" + get(activity, "seekFramePending"));
+            check(mode.equals("paged") ? get(get(activity, "pagedReader"), "layout") == layout && ((PagedReaderView) get(activity, "pagedReader")).offset() > 0 : get(activity, "readingText") == layout && ((android.widget.ScrollView) get(activity, "readingScroll")).getScrollY() > 0, "Preview did not reuse/render the current section: " + mode);
+            inject(MotionEvent.ACTION_MOVE, origin[0] + bar.getWidth() - bar.getPaddingRight(), points[1], at); Thread.sleep(100);
+            check((int) get(activity, "chapter") > 0 && book.optString("chapterTitle").contains("第二章"), "Live seeking did not cross chapters: " + mode);
+            inject(MotionEvent.ACTION_MOVE, points[3], points[1], at); Thread.sleep(100);
+            check((int) get(activity, "chapter") == 0 && book.optInt("position") > before, "Live seeking could not return to the earlier chapter: " + mode);
             inject(MotionEvent.ACTION_UP, points[3], points[1], at); Thread.sleep(120); check(book.optInt("position") > before, "Thumb release did not seek: " + mode);
             before = book.optInt("position"); int oldProgress = bar.getProgress();
             runOnMainSync(() -> points[0] = origin[0] + bar.thumbArea().centerX()); at = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, points[0], points[1], at); inject(MotionEvent.ACTION_MOVE, origin[0] + bar.getWidth() * .15f, points[1], at); inject(MotionEvent.ACTION_CANCEL, origin[0] + bar.getWidth() * .15f, points[1], at); Thread.sleep(100);
