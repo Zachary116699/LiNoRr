@@ -65,6 +65,15 @@ public class BookParserTest {
         assert BookParser.decode(new byte[]{(byte) 0xfe, (byte) 0xff, 0x4e, 0x2d, 0x65, (byte) 0x87}).equals("中文");
         assert BookParser.decode("中文\r\n正文".getBytes(StandardCharsets.UTF_8)).equals("中文\n正文");
         assert BookParser.decode("\uFEFF中文".getBytes(StandardCharsets.UTF_8)).equals("中文");
+        Path streamed=Files.createTempFile("linorr-stream", ".txt");
+        try{
+            String raw="中".repeat(8191)+"\r\n末尾\r下一行\n",normalized=raw.replace("\r\n","\n").replace('\r','\n');
+            for(String encoding:new String[]{"UTF-8","UTF-16LE","UTF-16BE","GB18030"}){
+                byte[] bytes=((encoding.startsWith("UTF-16")?"\uFEFF":"")+raw).getBytes(java.nio.charset.Charset.forName(encoding));Files.write(streamed,bytes);
+                assert BookParser.read(streamed.toFile(),normalized.length()).equals(normalized):encoding;
+                boolean limited=false;try{BookParser.read(streamed.toFile(),100);}catch(java.io.IOException expected){limited=true;}assert limited:encoding+" ignored the character budget";
+            }
+        }finally{Files.delete(streamed);}
         verify("\n\n第一章 开始\n正文");
         List<String> names = new ArrayList<>(Arrays.asList("10.txt", "2.txt", "1.txt")); names.sort(BookParser::naturalCompare);
         assert names.equals(Arrays.asList("1.txt", "2.txt", "10.txt"));

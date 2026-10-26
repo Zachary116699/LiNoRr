@@ -22,7 +22,7 @@ import static com.lnreader.app.Library.*;
 public final class NativeActivity extends Activity {
     private static final int TXT = 51, TREE = 52, FONT = 53, COVER = 54, BACKUP_TREE = 55, STORAGE = 56, PHOTOS = 57;
     private static final int BG = 0xfff7f6f2, INK = 0xff303b32, MUTED = 0xff8a8e83, ACCENT = 0xff52634e;
-    private Library lib;
+    private volatile Library lib;
     private LinearLayout root, content, cards, readingBody;
     private ScrollView shelfScroll, readingScroll;
     private TextView progressLabel, chapterLabel, readingText;
@@ -58,6 +58,15 @@ public final class NativeActivity extends Activity {
     private boolean waitingStorage;
     private int chapter, bodyOffset, pagePrefix, searchToken;
     private boolean list, importing, positioning, controlsVisible, endReached;
+    private volatile boolean backgroundImport, cancelImport, destroyed;
+    private int shelfTotal, shelfGeneration;
+    private BookStore.Filter shelfFilter;
+    private String pageQueryKey = "";
+    private long pageRevision = -1;
+    private Map<String,int[]> categoryCounts = Collections.emptyMap();
+    private long countsRevision = -1;
+    private boolean countsPrepared;
+    private boolean saveQueued, saveAgain;
     private int pageNumber = 1, pageCount = 1;
     private volatile int paginationGeneration;
     private int[] pageTotals;
@@ -65,9 +74,10 @@ public final class NativeActivity extends Activity {
     private String pageIndexSource = "pending";
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final ExecutorService openIo = Executors.newSingleThreadExecutor();
-    private final ExecutorService pageIo = Executors.newSingleThreadExecutor();
+    private final ExecutorService pageIo = new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(1),new ThreadPoolExecutor.DiscardOldestPolicy());
     private final ExecutorService saveIo = Executors.newSingleThreadExecutor();
-    private final ExecutorService coverIo = Executors.newFixedThreadPool(2);
+    private final ExecutorService coverIo = new ThreadPoolExecutor(2,2,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(32),new ThreadPoolExecutor.DiscardOldestPolicy());
+    private final ExecutorService queryIo = new ThreadPoolExecutor(1,1,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(1),new ThreadPoolExecutor.DiscardOldestPolicy());
     private final android.util.LruCache<String, Bitmap> coverCache = new android.util.LruCache<String, Bitmap>(8 * 1024 * 1024) { @Override protected int sizeOf(String key, Bitmap bitmap) { return bitmap.getByteCount(); } };
     private GridView bookGrid;
     private ShelfAdapter shelfAdapter;
@@ -98,6 +108,14 @@ public final class NativeActivity extends Activity {
     private final Map<Dialog, LinearLayout> dialogShells = new LinkedHashMap<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Dialog busyDialog;
+    private Dialog importProgressDialog;
+    private TextView importStatus,importDetails;
+    private ProgressBar importProgress;
+    private volatile int importDone,importTotal;
+    private volatile String importLabel="正在准备…";
+    private long lastImportUpdate,lastBusyUpdate;
+    private volatile InputStream activeImportInput;
+    private long scanMetadataBytes;
     private TextView busyText;
     private TextView busyDetails;
     private ProgressBar busyProgress;
@@ -107,8 +125,9 @@ public final class NativeActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        try { lib = new Library(this); list = lib.state.optBoolean("list"); showShelf(); if (!lib.maintenanceWarning.isEmpty()) toast(lib.maintenanceWarning); if (lib.canWrite()) { saveIo.execute(lib::cleanupPending); runWithBackup(() -> {}); } }
-        catch (Exception e) { new AlertDialog.Builder(this).setTitle("书库暂时无法打开").setMessage(e.getMessage()).setPositiveButton("关闭", (d, w) -> finish()).show(); }
+        TextView loading=new TextView(this);loading.setText("正在打开书库…");loading.setGravity(Gravity.CENTER);setContentView(loading);
+        io.execute(() -> {try {Library loaded=new Library(getApplicationContext());loaded.cleanupPending();loaded.discardPrivateCatalog();runOnUiThread(() -> {if(destroyed){loaded.store.close();return;}lib=loaded;list=lib.state.optBoolean("list");showShelf();if(!lib.maintenanceWarning.isEmpty())toast(lib.maintenanceWarning);if(lib.canWrite())runWithBackup(()->{});});}
+        catch(Exception e){runOnUiThread(()->{if(!destroyed)new AlertDialog.Builder(this).setTitle("书库暂时无法打开").setMessage(e.getMessage()).setPositiveButton("关闭",(d,w)->finish()).show();});}});
     }
     private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private TextView text(String value, float size, int color) { TextView t = new TextView(this); t.setText(value); t.setTextSize(size); t.setTextColor(color); t.setFontFeatureSettings("kern"); return t; }
@@ -126,7 +145,7 @@ public final class NativeActivity extends Activity {
     private void outlinePanel(LinearLayout panel) { panel.setTag("expand-panel"); padding(panel, 10, 8); GradientDrawable border = shape(uiBg(), 9); border.setStroke(dp(1), blend(uiBg(), uiAccent(), .35f)); panel.setBackground(border); }
     private void weighted(LinearLayout parent, View child) { parent.addView(child, new LinearLayout.LayoutParams(0, -2, 1)); }
     private EditText input(String hint, String value) { EditText e = new EditText(this); e.setTextSize(14); e.setTextColor(uiInk()); e.setHintTextColor(uiMuted()); e.setBackgroundTintList(android.content.res.ColorStateList.valueOf(uiAccent())); e.setSingleLine(true); e.setHint(hint); e.setText(value); padding(e, 10, 8); return e; }
-    private void toast(String message) { runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()); }
+    private void toast(String message) {if(destroyed)return;runOnUiThread(() -> {if(!destroyed)Toast.makeText(this,message,Toast.LENGTH_LONG).show();});}
     private void base(int background, boolean dark) {
         root = column(); root.setBackgroundColor(background); setContentView(root);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -172,13 +191,18 @@ public final class NativeActivity extends Activity {
         }
     }
     private void persist() {
+        if (lib == null || destroyed) return;
+        if (current != null) lib.store.touch(current);
         set(lib.state, "active", active.equals("private") ? "all" : active); set(lib.state, "list", list);
         handler.removeCallbacks(exportTask); handler.postDelayed(exportTask, 120);
     }
     private final Runnable exportTask = () -> {
         if (lib == null) return;
-        if (importing || seekPreview) { handler.postDelayed(this.exportTask, 200); return; }
-        String snapshot = lib.snapshot(); Library target = lib; saveIo.execute(() -> { if (target != lib) return; try { target.saveSnapshot(snapshot); } catch (Exception e) { toast("保存失败：" + e.getMessage()); } });
+        if (destroyed) return;
+        if (importing || seekPreview) { handler.postDelayed(this.exportTask, 500); return; }
+        if (saveQueued) {saveAgain=true;return;}
+        String snapshot = lib.snapshot(); Library target = lib; saveQueued=true;
+        saveIo.execute(() -> {try {if(target==lib)target.saveSnapshot(snapshot);}catch(Exception e){toast("保存失败："+e.getMessage());}finally{handler.post(()->{saveQueued=false;if(saveAgain&&!destroyed){saveAgain=false;this.exportTask.run();}});}});
     };
     private void ensureStorage(Runnable action) {
         if (lib.canWrite()) { runWithBackup(action); return; }
@@ -191,10 +215,10 @@ public final class NativeActivity extends Activity {
     private void runWithBackup(Runnable action) { if (!lib.portableReady) migrateBackup(() -> runWithBackup(action)); else if (hasRemoved()) performRemove(Collections.emptySet(), action); else action.run(); }
     private void migrateBackup(Runnable after) {
         showBusy("正在准备小说备份…");
-        JSONObject snapshot; try { snapshot = new JSONObject(lib.snapshot()); } catch (Exception e) { hideBusy(); toast(e.getMessage()); return; }
+        lib.snapshot();
         saveIo.execute(() -> { try {
-            JSONObject updated = lib.prepareBackup(snapshot);
-            runOnUiThread(() -> { lib.applyPaths(updated); hideBusy(); persist(); if (after != null) after.run(); else showShelf(); });
+            lib.prepareBackup(null);
+            runOnUiThread(() -> { hideBusy(); persist(); if (after != null) after.run(); else showShelf(); });
         } catch (Exception e) { runOnUiThread(this::hideBusy); toast("备份未完成：" + e.getMessage()); } });
     }
     private void organizeAndRefresh() { if (lib.canWrite()) migrateBackup(this::showShelf); else { persist(); showShelf(); } }
@@ -205,20 +229,20 @@ public final class NativeActivity extends Activity {
     private void completeStorageRequest() {
         if (!waitingStorage) return; waitingStorage = false; Runnable action = storageAction; storageAction = null;
         if (lib.canWrite()) {
-            // Reinstalling or clearing app data recovers the portable metadata before any save.
-            if (lib.books.isEmpty() && new File(lib.backup, "userdata.json").isFile()) try { lib = new Library(this, true); list = lib.state.optBoolean("list"); showShelf(); } catch (Exception e) { toast("恢复书库失败：" + e.getMessage()); return; }
-            runWithBackup(action == null ? () -> {} : action);
+            showBusy("正在恢复书库…");final Library previous=lib;final String settings=lib.snapshot();
+            saveIo.execute(()->{try{boolean prefer=new File(previous.backup,"userdata.json").isFile()||new File(previous.backup,BookStore.FILE).isFile();previous.saveSnapshot(settings);previous.store.checkpoint();Library loaded=new Library(getApplicationContext(),prefer);loaded.cleanupPending();previous.store.close();loaded.discardPrivateCatalog();runOnUiThread(()->{if(destroyed){loaded.store.close();return;}lib=loaded;pageRevision=countsRevision=-1;list=lib.state.optBoolean("list");hideBusy();showShelf();runWithBackup(action==null?()->{}:action);});}catch(Exception e){runOnUiThread(this::hideBusy);toast("恢复书库失败："+e.getMessage());}});
         } else toast("未取得文件读写权限；导入前请在设置中授权");
     }
 
     private void showShelf() {
+        if(destroyed)return;
         finishSeek(false);
         if (!privacyMode && !shelfVisible(active)) active = "all";
         recentSortView = json("sort", "lastRead", "ascending", false);
         if (active.equals("recent")) { shelfView().remove("sort"); shelfView().remove("ascending"); }
         list = shelfView().optBoolean("list", lib.state.optBoolean("list"));
         set(shelfView(), "list", list);
-        paginationGeneration++; pageTotals = null; current = null; source = ""; base(shelfBg(), shelfDark());
+        paginationGeneration++;pageTotals=null;current=null;source="";document=null;chapters=Collections.emptyList();toc=Collections.emptyList();lib.releaseDocument();pagedReader=null;readingText=null;readingBody=null;base(shelfBg(),shelfDark());
         ShelfSurface surface = new ShelfSurface(this, this::openDrawer); root.addView(surface, new LinearLayout.LayoutParams(-1, -1));
         LinearLayout outer = column(); surface.addView(outer, new FrameLayout.LayoutParams(-1, -1));
         int headerColor = shelfHeaderBg();
@@ -230,7 +254,7 @@ public final class NativeActivity extends Activity {
         View spacer = new View(this); brand.addView(spacer, new LinearLayout.LayoutParams(dp(6), 1));
         brand.addView(shelfIcon("settings", "书架设置", this::shelfSettings), new LinearLayout.LayoutParams(dp(42), dp(44)));
         brand.addView(new View(this), new LinearLayout.LayoutParams(dp(6), 1));
-        brand.addView(shelfIcon("import", "导入书籍", () -> ensureStorage(this::importDialog)), new LinearLayout.LayoutParams(dp(42), dp(44)));
+        brand.addView(shelfIcon("import", "导入书籍", () -> {if(backgroundImport)showImportProgress();else ensureStorage(this::importDialog);}), new LinearLayout.LayoutParams(dp(42), dp(44)));
         if (privacyMode) { int ink = shelfDark() ? 0xffffe5ed : 0xff35141e; logo.setTextColor(ink); for (int i = 0; i < brand.getChildCount(); i++) if (brand.getChildAt(i) instanceof ImageButton) ((ReaderIcon) ((ImageButton) brand.getChildAt(i)).getDrawable()).color(ink); }
         outer.addView(brand);
         getWindow().setStatusBarColor(headerColor);
@@ -246,7 +270,7 @@ public final class NativeActivity extends Activity {
         Runnable submitSearch = () -> { query = searchDraft = search.getText().toString(); shelfPage = 0; scheduleSearch(); hideKeyboard(search); };
         tools.addView(shelfIcon("search", "搜索书籍", submitSearch), new LinearLayout.LayoutParams(dp(44), dp(44))); addSearchClear(tools, search, submitSearch); shelfTools.addView(tools);
         countRow = row(); content.addView(countRow); shelfCount = text("", 14, shelfMuted()); shelfCount.setPadding(dp(10), 0, 0, 0); weighted(countRow, shelfCount);
-        selectAll = shelfButton("全选当前筛选", () -> { selectedBooks.clear(); for (JSONObject b : filteredBooks) selectedBooks.add(b.optString("id")); renderCards(shelfMatches); }); countRow.addView(selectAll);
+        selectAll = shelfButton("全选当前筛选", this::selectFilteredBooks); countRow.addView(selectAll);
         selectAll.setMinHeight(dp(36)); selectAll.setMinimumHeight(dp(36)); padding(selectAll, 8, 2);
         cancelSelection = shelfButton("取消选择", () -> { selectedBooks.clear(); selectionMode = false; renderCards(shelfMatches); }); countRow.addView(cancelSelection);
         cancelSelection.setMinHeight(dp(36)); cancelSelection.setMinimumHeight(dp(36)); padding(cancelSelection, 8, 2);
@@ -320,20 +344,18 @@ public final class NativeActivity extends Activity {
     private void changePrivacy(Set<String> ids, boolean value) {
         if (!privacyMode) return;
         if (ids.isEmpty()) { toast("请先选择书籍"); return; }
-        for (JSONObject book : lib.books) if (ids.contains(book.optString("id"))) set(book, "private", value);
-        selectedBooks.clear(); selectionMode = false; persist(); showShelf();
+        editBooks(()->new LinkedHashSet<>(ids),b->set(b,"private",value),false,null);
     }
     private boolean bookVisible(JSONObject book) { return privacyMode || !book.optBoolean("private", false); }
     private boolean shelfVisible(String id) {
         if (id.equals("private")) return privacyMode;
         if (privacyMode || isBuiltinShelf(id)) return true;
-        boolean hasBooks = false;
-        for (JSONObject book : lib.books) if (Library.shelfIds(book).contains(id)) { hasBooks = true; if (bookVisible(book)) return true; }
-        return !hasBooks;
+        int[] counts=categoryCounts.get(id);return counts==null||counts[0]==0||counts[1]>0;
     }
     private String shelfName(String id) { if (id.equals("private")) return "隐私书籍"; if (id.equals("recent")) return "最近阅读"; if (id.equals("all")) return "全部书籍"; for (JSONObject s : lib.shelves) if (id.equals(s.optString("id"))) return s.optString("name"); return "全部书籍"; }
     private void openDrawer() {
         if (importing || current != null || drawer != null && drawer.isShowing()) return;
+        if(!prepareCounts(this::openDrawer))return;
         drawer = new Dialog(this); ShelfSurface surface = new ShelfSurface(this, drawer::dismiss, -1); LinearLayout shell = column(); padding(shell, 16, 20); shell.setBackgroundColor(uiBg()); surface.addView(shell, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout top = row(); weighted(top, text("书架", 23, uiInk())); top.addView(button("×", false, drawer::dismiss)); shell.addView(top); gap(shell, 12);
         List<JSONObject> entries = new ArrayList<>(); Runnable refill = () -> { entries.clear(); entries.add(json("id", "recent", "name", "最近阅读")); entries.add(json("id", "all", "name", "全部书籍")); if (privacyMode) entries.add(json("id", "private", "name", "隐私书籍")); for (JSONObject shelf : lib.shelves) if (!isBuiltinShelf(shelf.optString("id")) && shelfVisible(shelf.optString("id"))) entries.add(shelf); }; refill.run();
@@ -372,7 +394,7 @@ public final class NativeActivity extends Activity {
                         line.addView(shelfIcon("edit", "重命名" + shelf.optString("name"), () -> { choices.setItemsCanFocus(true); choices.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS); renaming[0] = shelf; draft[0] = shelf.optString("name"); focusRename[0] = true; notifyDataSetChanged(); }), new LinearLayout.LayoutParams(dp(36), dp(44)));
                         ImageButton delete = shelfIcon("trash", "删除" + shelf.optString("name"), () -> { drawer.dismiss(); deleteShelf(shelf); }); delete.setImageDrawable(new ReaderIcon("trash", dangerInk(), getResources().getDisplayMetrics().density)); line.addView(delete, new LinearLayout.LayoutParams(dp(36), dp(44)));
                     }
-                } else { int count = 0; for (JSONObject book : lib.books) if (inShelf(book, id)) count++; line.addView(text(String.valueOf(id.equals("recent") ? Math.min(90, count) : count), 14, uiMuted())); }
+                } else { int[] counts=categoryCounts.getOrDefault(id,new int[]{0,0});int count=counts[privacyMode?0:1];line.addView(text(String.valueOf(count),14,uiMuted())); }
                 if (id.equals(active)) line.setBackground(shape(shelfHeaderBg(), 8)); item.addView(line); if (p == (privacyMode ? 2 : 1)) { gap(item, 8); rule(item); gap(item, 8); } reorder[0].bind(item, shelf, p); return item;
             }
         };
@@ -391,9 +413,9 @@ public final class NativeActivity extends Activity {
         });
         choices.setAdapter(adapter);
         choices.setOnItemClickListener((parent, view, p, id) -> { if (editing[0]) return; collapseShelfTools(); active = entries.get(p).optString("id"); shelfPage = 0; drawer.dismiss(); persist(); showShelf(); });
-        choices.setOnItemLongClickListener((parent, view, p, id) -> { JSONObject shelf = entries.get(p); if (!isBuiltinShelf(shelf.optString("id"))) { editing[0] = true; choices.setItemsCanFocus(true); choices.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS); editToggle[0].setText("完成编辑"); renaming[0] = shelf; draft[0] = shelf.optString("name"); focusRename[0] = true; adapter.notifyDataSetChanged(); return true; } return false; });
+        choices.setOnItemLongClickListener((parent, view, p, id) -> {if(importEditBlocked())return true; JSONObject shelf = entries.get(p); if (!isBuiltinShelf(shelf.optString("id"))) { editing[0] = true; choices.setItemsCanFocus(true); choices.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS); editToggle[0].setText("完成编辑"); renaming[0] = shelf; draft[0] = shelf.optString("name"); focusRename[0] = true; adapter.notifyDataSetChanged(); return true; } return false; });
         shell.addView(choices, new LinearLayout.LayoutParams(-1, 0, 1)); shell.addView(button("新增书架", true, () -> { drawer.dismiss(); shelfEditor(null); }));
-        Button edit = softButton("编辑书架", () -> {}); editToggle[0] = edit; edit.setOnClickListener(v -> { cancelRename[0].run(); editing[0] = !editing[0]; edit.setText(editing[0] ? "完成编辑" : "编辑书架"); adapter.notifyDataSetChanged(); }); shell.addView(edit);
+        Button edit = softButton("编辑书架", () -> {}); editToggle[0] = edit; edit.setOnClickListener(v -> {if(importEditBlocked())return; cancelRename[0].run(); editing[0] = !editing[0]; edit.setText(editing[0] ? "完成编辑" : "编辑书架"); adapter.notifyDataSetChanged(); }); shell.addView(edit);
         drawer.setContentView(surface); Window window = drawer.getWindow(); if (window != null) { window.setBackgroundDrawableResource(android.R.color.transparent); window.setGravity(Gravity.START | Gravity.TOP); }
         drawer.show(); if (window != null) window.setLayout(Math.min(dp(320), getResources().getDisplayMetrics().widthPixels - dp(36)), -1);
         drawer.setOnDismissListener(dialog -> { if (renameControls[0] != null) hideKeyboard(renameControls[0]); });
@@ -401,15 +423,14 @@ public final class NativeActivity extends Activity {
     private boolean touchInside(View view, MotionEvent event) { if (view == null || !view.isShown()) return false; int[] location = new int[2]; view.getLocationOnScreen(location); return event.getRawX() >= location[0] && event.getRawX() < location[0] + view.getWidth() && event.getRawY() >= location[1] && event.getRawY() < location[1] + view.getHeight(); }
     private void shelfPrivacy(JSONObject shelf) {
         if (!privacyMode || isBuiltinShelf(shelf.optString("id"))) return;
-        Set<String> ids = new HashSet<>(); for (JSONObject book : lib.books) if (Library.shelfIds(book).contains(shelf.optString("id"))) ids.add(book.optString("id"));
-        LinearLayout body = column(); body.addView(text("管理此书架的 " + ids.size() + " 本书；同一本书在其他分类中的隐私状态也会一起更改。", 15, uiInk()));
+        LinearLayout body = column(); body.addView(text("同一本书在其他分类中的隐私状态也会一起更改。", 15, uiInk()));
         Dialog dialog = sheet("管理书架 · " + shelf.optString("name"), body);
-        body.addView(button("添加到隐私", false, () -> { dialog.dismiss(); changePrivacy(ids, true); }));
-        body.addView(button("移出隐私", false, () -> { dialog.dismiss(); changePrivacy(ids, false); }));
+        body.addView(button("添加到隐私", false, () -> { dialog.dismiss();editBooks(()->lib.store.ids(new BookStore.Filter(shelf.optString("id"),"","added",true,false)),b->set(b,"private",true),false,null); }));
+        body.addView(button("移出隐私", false, () -> { dialog.dismiss();editBooks(()->lib.store.ids(new BookStore.Filter(shelf.optString("id"),"","added",true,false)),b->set(b,"private",false),false,null); }));
     }
     private void deleteShelf(JSONObject shelf) {
         if (isBuiltinShelf(shelf.optString("id"))) return;
-        confirmation("删除书架？", "移除这个分类归属；仍有其他分类的书籍保留其余分类，没有其他分类的书籍移至未分类。", "删除", () -> { String id = shelf.optString("id"); for (JSONObject book : lib.books) { List<String> ids = Library.shelfIds(book); if (ids.remove(id)) Library.setShelfIds(book, ids); } lib.shelves.remove(shelf); JSONObject views = lib.state.optJSONObject("shelfViews"); if (views != null) views.remove(id); if (active.equals(id)) active = "all"; shelfPage = 0; organizeAndRefresh(); });
+        confirmation("删除书架？", "移除这个分类归属；仍有其他分类的书籍保留其余分类，没有其他分类的书籍移至未分类。", "删除", () -> {String id=shelf.optString("id");editBooks(()->lib.store.ids(new BookStore.Filter(id,"","added",true,false)),b->{List<String> ids=Library.shelfIds(b);ids.remove(id);Library.setShelfIds(b,ids);},true,()->{lib.shelves.remove(shelf);JSONObject views=lib.state.optJSONObject("shelfViews");if(views!=null)views.remove(id);if(active.equals(id))active="all";persist();showShelf();});});
     }
     private boolean shelfDark() { return lib != null && lib.prefs().optBoolean("night", false); }
     private int[] uiPalette() {
@@ -442,13 +463,7 @@ public final class NativeActivity extends Activity {
     private boolean inShelf(JSONObject book, String id) { return bookVisible(book) && (id.equals("all") || (id.equals("private") ? privacyMode && book.optBoolean("private") : id.equals("recent") ? book.optLong("lastRead") > 0 && !book.optBoolean("hiddenRecent") : id.equals("default") ? Library.shelfIds(book).isEmpty() : Library.shelfIds(book).contains(id))); }
     private int percent(JSONObject b) { int length = b.optInt("length"), pos = b.optInt("position"); return length == 0 ? 0 : pos >= length - 2 ? 100 : Math.min(99, (int) (100L * pos / length)); }
     private void scheduleSearch() {
-        final int token = ++searchToken;
-        handler.postDelayed(() -> {
-            if (token != searchToken || current != null) return;
-            String term = query.trim().toLowerCase(Locale.ROOT); Set<String> matches = new HashSet<>();
-            for (JSONObject b : lib.books) if (bookVisible(b) && (b.optString("title").toLowerCase(Locale.ROOT).contains(term) || Library.fileNames(b).toLowerCase(Locale.ROOT).contains(term))) matches.add(b.optString("id"));
-            renderCards(matches);
-        }, 120);
+        searchToken++; shelfPage=0;renderCards(null);
     }
     private void hideKeyboard(View view) { ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(view.getWindowToken(), 0); }
     private void addSearchClear(LinearLayout row, EditText input, Runnable submit) {
@@ -468,35 +483,49 @@ public final class NativeActivity extends Activity {
             if (action == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH || action == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) { submit.run(); return true; } return false;
         });
     }
+    private BookStore.Filter currentFilter() {
+        JSONObject view=active.equals("recent")?recentSortView:shelfView();
+        return new BookStore.Filter(active,query,view.optString("sort",active.equals("recent")?"lastRead":"added"),privacyMode,view.optBoolean("ascending",false));
+    }
     private void renderCards(Set<String> matches) {
-        if (bookGrid == null || shelfAdapter == null) return; shelfMatches = matches; filteredBooks.clear();
-        for (JSONObject b : lib.books) if (inShelf(b, active) && (matches == null || matches.contains(b.optString("id")))) filteredBooks.add(b);
-        if (active.equals("recent")) { filteredBooks.clear(); List<JSONObject> recent = new ArrayList<>(); for (JSONObject b : lib.books) if (inShelf(b, "recent")) recent.add(b); recent.sort((a, b) -> Long.compare(b.optLong("lastRead"), a.optLong("lastRead"))); for (int i = 0; i < Math.min(90, recent.size()); i++) { JSONObject b = recent.get(i); if (matches == null || matches.contains(b.optString("id"))) filteredBooks.add(b); } }
-        JSONObject view = active.equals("recent") ? recentSortView : shelfView(); String sort = view.optString("sort", active.equals("recent") ? "lastRead" : "added"); int direction = view.optBoolean("ascending", false) ? 1 : -1;
-        Map<String, Long> sizes = new HashMap<>(); if (sort.equals("size")) for (JSONObject b : filteredBooks) { long size = b.has("fileSize") ? b.optLong("fileSize") : lib.fileSize(b); set(b, "fileSize", size); sizes.put(b.optString("id"), size); }
-        filteredBooks.sort((a, b) -> { int result;
-            if (sort.equals("filename") || sort.equals("title")) result = BookParser.naturalCompare(sort.equals("filename") ? Library.fileNames(a) : a.optString("title"), sort.equals("filename") ? Library.fileNames(b) : b.optString("title"));
-            else result = Long.compare(sort.equals("size") ? sizes.get(a.optString("id")) : a.optLong(sort), sort.equals("size") ? sizes.get(b.optString("id")) : b.optLong(sort));
-            return result == 0 ? a.optString("id").compareTo(b.optString("id")) : direction * result; });
+        if(bookGrid==null||shelfAdapter==null||lib==null)return;
+        shelfFilter=currentFilter(); final BookStore.Filter filter=shelfFilter;
+        final String key=filter.shelf+"|"+filter.query+"|"+filter.sort+"|"+filter.privacy+"|"+filter.ascending+"|"+shelfPage;
+        if(key.equals(pageQueryKey)&&pageRevision==lib.store.revision()){renderPage();return;}
+        final int generation=++shelfGeneration,requested=shelfPage;final Library target=lib;
+        queryIo.execute(()->{try{
+            target.store.flush();int total=target.store.count(filter),page=Math.max(0,Math.min(requested,Math.max(0,(total-1)/15)));
+            List<JSONObject> rows=target.store.page(filter,page*15,15);long revision=target.store.revision();
+            handler.post(()->{if(destroyed||generation!=shelfGeneration||current!=null||target!=lib)return;shelfTotal=total;shelfPage=page;pageBooks.clear();pageBooks.addAll(rows);pageQueryKey=key;pageRevision=revision;renderPage();});
+        }catch(Exception e){toast("查询书架失败："+e.getMessage());}});
+    }
+    private void renderPage() {
         int columns = list ? 1 : getResources().getConfiguration().screenWidthDp >= 600 ? 4 : 3;
-        shelfPage = Math.max(0, Math.min(shelfPage, Math.max(0, (filteredBooks.size() - 1) / 15))); pageBooks.clear();
-        for (int i = shelfPage * 15; i < Math.min(filteredBooks.size(), (shelfPage + 1) * 15); i++) pageBooks.add(filteredBooks.get(i));
         bookGrid.setNumColumns(columns);
         int coverWidth = (getResources().getConfiguration().screenWidthDp - 40 - 12 * (columns - 1)) / columns - 8;
         int rowHeight = list ? 92 : Math.round(coverWidth * 1.4f) + 7 + 34 + 28 + 8, rows = (pageBooks.size() + columns - 1) / columns;
         bookGrid.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(Math.max(1, rows * rowHeight + Math.max(0, rows - 1) * 16))));
-        shelfCount.setText(selectionMode ? getString(R.string.selection_count, filteredBooks.size(), selectedBooks.size()) : getString(R.string.book_count, filteredBooks.size())); emptyShelf.setText(!query.isEmpty() ? "未找到书籍" : active.equals("recent") ? "暂无最近阅读" : "暂无书籍");
+        shelfCount.setText(selectionMode ? getString(R.string.selection_count, shelfTotal, selectedBooks.size()) : getString(R.string.book_count, shelfTotal)); emptyShelf.setText(!query.isEmpty() ? "未找到书籍" : active.equals("recent") ? "暂无最近阅读" : "暂无书籍");
         selectionActions.setVisibility(selectionMode ? View.VISIBLE : View.GONE); shelfAdapter.notifyDataSetChanged();
         cancelSelection.setVisibility(selectionMode ? View.VISIBLE : View.GONE); selectAll.setVisibility(selectionMode ? View.VISIBLE : View.GONE); countRow.setMinimumHeight(dp(selectionMode ? 38 : 28));
-        shelfPager.removeAllViews(); shelfPager.setVisibility(filteredBooks.size() > 15 ? View.VISIBLE : View.GONE);
-        if (filteredBooks.size() > 15) {
-            int pages = (filteredBooks.size() + 14) / 15; Button previous = button("上一页", false, () -> changeShelfPage(shelfPage - 1)); previous.setEnabled(shelfPage > 0); shelfPager.addView(previous);
+        shelfPager.removeAllViews(); shelfPager.setVisibility(shelfTotal > 15 ? View.VISIBLE : View.GONE);
+        if (shelfTotal > 15) {
+            int pages = (shelfTotal + 14) / 15; Button previous = button("上一页", false, () -> changeShelfPage(shelfPage - 1)); previous.setEnabled(shelfPage > 0); shelfPager.addView(previous);
             EditText page = input("页码", String.valueOf(shelfPage + 1)); page.setContentDescription("书架页码"); page.setInputType(InputType.TYPE_CLASS_NUMBER); page.setSelectAllOnFocus(true); page.setGravity(Gravity.CENTER); shelfPager.addView(page, new LinearLayout.LayoutParams(dp(52), -2)); shelfPager.addView(text("/ " + pages, 14, uiMuted()));
             shelfPager.addView(button("跳转", false, () -> { try { int number = Integer.parseInt(page.getText().toString()); if (number < 1 || number > pages) throw new NumberFormatException(); changeShelfPage(number - 1); } catch (NumberFormatException error) { page.setError("1～" + pages); } }));
             Button next = button("下一页", false, () -> changeShelfPage(shelfPage + 1)); next.setEnabled(shelfPage + 1 < pages); shelfPager.addView(next);
         }
     }
-    private void changeShelfPage(int page) { shelfPage = page; renderCards(shelfMatches); shelfScroll.post(() -> shelfScroll.scrollTo(0, 0)); ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(shelfScroll.getWindowToken(), 0); }
+    private void changeShelfPage(int page) { shelfPage = page; renderCards(null); shelfScroll.post(() -> shelfScroll.scrollTo(0, 0)); ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(shelfScroll.getWindowToken(), 0); }
+    private void selectFilteredBooks() {
+        final int generation=shelfGeneration;final BookStore.Filter filter=currentFilter();final Library target=lib;
+        queryIo.execute(()->{Set<String> ids=target.store.ids(filter);handler.post(()->{if(destroyed||generation!=shelfGeneration||current!=null)return;selectedBooks.clear();selectedBooks.addAll(ids);renderPage();});});
+    }
+    private void loadShelfCounts(Runnable after) {
+        final Library target=lib;
+        queryIo.execute(()->{try{target.store.flush();Map<String,int[]> result=target.store.counts();for(String id:new String[]{"all","recent","private"})result.put(id,new int[]{target.store.count(new BookStore.Filter(id,"","added",true,false)),target.store.count(new BookStore.Filter(id,"","added",false,false))});long revision=target.store.revision();handler.post(()->{if(destroyed||target!=lib)return;categoryCounts=result;countsRevision=revision;if(after!=null)after.run();});}catch(Exception e){toast(e.getMessage());}});
+    }
+    private boolean prepareCounts(Runnable action){if(countsPrepared||countsRevision==lib.store.revision())return true;loadShelfCounts(()->{countsPrepared=true;try{action.run();}finally{countsPrepared=false;}});return false;}
     private final class ShelfAdapter extends BaseAdapter {
         public int getCount() { return pageBooks.size(); } public Object getItem(int p) { return pageBooks.get(p); } public long getItemId(int p) { return pageBooks.get(p).optString("id").hashCode(); }
         public int getViewTypeCount() { return 2; } public int getItemViewType(int p) { return list ? 1 : 0; }
@@ -523,7 +552,6 @@ public final class NativeActivity extends Activity {
         void bind(JSONObject b) {
             book = b; String id = b.optString("id"), name = b.optString("title"); title.setText(name); generated.setText(name); image.setImageDrawable(null); cover.setContentDescription(name + "封面");
             cover.setBackground(shape(BookIdentity.coverColor(b.optString("contentHash", id)), 7));
-            if (b.optString("contentHash").isEmpty()) coverIo.submit(() -> { try { String hash = BookIdentity.fingerprint(lib.partFiles(b)); handler.post(() -> { set(b, "contentHash", hash); if (book == b) cover.setBackground(shape(BookIdentity.coverColor(hash), 7)); persist(); }); } catch (Exception ignored) {} });
             progressText.setText(b.optLong("lastRead") > 0 ? getString(R.string.book_progress, percent(b)) : "未读"); more.setContentDescription("管理" + name);
             boolean selected = selectionMode && selectedBooks.contains(id); setSelected(selected); setBackground(selected ? shape(blend(shelfBg(), uiAccent(), .18f), 8) : null); cover.setForeground(coverOutline(selected));
             check.setVisibility(selectionMode ? View.VISIBLE : View.GONE); check.setText(selected ? "✓" : ""); check.setBackground(shape(selected ? uiAccent() : 0x995b6257, 10));
@@ -534,7 +562,7 @@ public final class NativeActivity extends Activity {
         }
     }
     private Dialog sheet(String title, LinearLayout body) {
-        Dialog d = new Dialog(this); LinearLayout shell = column(); padding(shell, 22, 16); shell.setBackground(shape(uiBg(), 18)); LinearLayout heading = row(); TextView headingText = text(title, 21, uiInk()); headingText.setSingleLine(); headingText.setEllipsize(TextUtils.TruncateAt.END); weighted(heading, headingText); heading.addView(button("×", false, d::dismiss)); shell.addView(heading); gap(shell, 10); shell.addView(body);
+        Dialog d = new Dialog(this){@Override public void dismiss(){dialogShells.remove(this);super.dismiss();}}; LinearLayout shell = column(); padding(shell, 22, 16); shell.setBackground(shape(uiBg(), 18)); LinearLayout heading = row(); TextView headingText = text(title, 21, uiInk()); headingText.setSingleLine(); headingText.setEllipsize(TextUtils.TruncateAt.END); weighted(heading, headingText); heading.addView(button("×", false, d::dismiss)); shell.addView(heading); gap(shell, 10); shell.addView(body);
         body.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() { public void onChildViewAdded(View parent, View child) { themeDialog(child); } public void onChildViewRemoved(View parent, View child) {} }); themeDialog(body);
         ScrollView scroll = new ScrollView(this) {
             @Override protected void onMeasure(int width, int height) {
@@ -547,6 +575,7 @@ public final class NativeActivity extends Activity {
         if (w != null) { w.setBackgroundDrawableResource(android.R.color.transparent); w.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL); w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE); }
         d.show(); if (w != null) { WindowManager.LayoutParams params = w.getAttributes(); params.width = Math.min(dp(480), getResources().getDisplayMetrics().widthPixels - dp(32)); params.height = -2; params.y = dp(16); w.setAttributes(params); }
         dialogShells.put(d, shell);
+        scroll.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){public void onViewAttachedToWindow(View v){}public void onViewDetachedFromWindow(View v){dialogShells.remove(d);}});
         return d;
     }
     private void sheetAction(Dialog dialog, String icon, String label, Runnable action) { LinearLayout shell = dialogShells.get(dialog); if (shell != null) { LinearLayout heading = (LinearLayout) shell.getChildAt(0); heading.addView(readerIconButton(icon, label, action), heading.getChildCount() - 1, new LinearLayout.LayoutParams(dp(40), dp(42))); } }
@@ -612,19 +641,26 @@ public final class NativeActivity extends Activity {
         for (JSONObject s : lib.shelves) if (s != shelf && s.optString("name").equals(value)) { toast("书架名称已经存在"); return null; } return value;
     }
     private void shelfEditor(JSONObject shelf) {
+        if(importEditBlocked())return;
         LinearLayout body = column(); EditText name = input("书架名称", shelf == null ? "" : shelf.optString("name")); name.setContentDescription("书架名称"); settingRow(body, "名称", name); gap(body, 20);
         Dialog dialog = sheet(shelf == null ? "新建书架" : "管理书架", body);
         body.addView(button("保存书架", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty() || value.length() > 20) { toast("书架名称请输入 1～20 字"); return; } for (JSONObject s : lib.shelves) if (s != shelf && s.optString("name").equals(value)) { toast("书架名称已经存在"); return; } if (shelf == null) { JSONObject s = json("id", UUID.randomUUID().toString(), "name", value); lib.shelves.add(s); collapseShelfTools(); active = s.optString("id"); } else set(shelf, "name", value); dialog.dismiss(); organizeAndRefresh(); }));
         if (shelf != null) body.addView(button("删除书架", false, () -> { dialog.dismiss(); deleteShelf(shelf); }));
     }
-    private void bookEditor(JSONObject book) {
+    private void bookEditor(JSONObject requested) {
+        if(destroyed)return;
+        final Library target=lib;final JSONObject book=target.store.peek(requested.optString("id"));
+        if(book==null){queryIo.execute(()->{JSONObject loaded=target.book(requested.optString("id"));handler.post(()->{if(!destroyed&&target==lib&&loaded!=null)bookEditor(loaded);});});return;}
+        if(!lib.canWrite()){ensureStorage(()->bookEditor(book));return;}
+        if(importEditBlocked())return;
+        if(!bookVisible(book)||!prepareCounts(()->bookEditor(book)))return;
         if (!bookVisible(book)) return;
         LinearLayout body = column(); LinearLayout cover = row(); cover.setGravity(Gravity.CENTER); cover.addView(bookCover(book, 88, 123)); body.addView(cover); gap(body, 6);
         Dialog[] editor = {null}; LinearLayout coverActions = row();
         Button importCover = softButton("导入封面", () -> { editor[0].dismiss(); ensureStorage(() -> chooseCover(book)); }); importCover.setMinHeight(dp(36)); importCover.setMinimumHeight(dp(36)); weighted(coverActions, importCover); coverActions.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
         Button removeCover = softButton("删除封面", () -> ensureStorage(() -> { editor[0].dismiss(); deleteCover(book); })); removeCover.setMinHeight(dp(36)); removeCover.setMinimumHeight(dp(36)); removeCover.setEnabled(book.optBoolean("cover") || lib.coverFile(book).isFile()); weighted(coverActions, removeCover); body.addView(coverActions); gap(body, 12);
         LinearLayout metadata = column(); outlinePanel(metadata); metadata.setContentDescription("书籍信息");
-        infoRow(metadata, "文件名称", Library.fileNames(book)); infoRow(metadata, "文件大小", android.text.format.Formatter.formatShortFileSize(this, lib.fileSize(book)));
+        infoRow(metadata,"文件名称",Library.displayNames(book));metadata.getChildAt(0).setContentDescription("查看全部文件名称");metadata.getChildAt(0).setOnClickListener(v->fileNamesDialog(book));infoRow(metadata,"文件大小",android.text.format.Formatter.formatShortFileSize(this,book.has("fileSize")?book.optLong("fileSize"):lib.fileSize(book)));
         infoRow(metadata, "导入日期", book.optLong("added") > 0 ? android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", new Date(book.optLong("added"))).toString() : "—");
         infoRow(metadata, "页码数量", book.optInt("lastPageCount") > 0 ? book.optInt("lastPage", 1) + "/" + book.optInt("lastPageCount") : "—/—"); infoRow(metadata, "阅读进度", percent(book) + "%"); body.addView(metadata); gap(body, 10);
         EditText name = input("书籍名称", book.optString("title")); name.setContentDescription("书籍名称"); name.setSelectAllOnFocus(true); settingRow(body, "书籍名称", name);
@@ -641,6 +677,7 @@ public final class NativeActivity extends Activity {
         TextView caption = text(label, 13, uiMuted()); caption.setTag("info-label"); line.addView(caption, new LinearLayout.LayoutParams(dp(76), -2));
         TextView text = text(value.isEmpty() ? "—" : value, 14, uiMuted()); text.setGravity(Gravity.END); text.setTextIsSelectable(true); weighted(line, text); body.addView(line);
     }
+    private void fileNamesDialog(JSONObject book){final Library target=lib;queryIo.execute(()->{List<String> names;if(book.optInt("_partCount")>64)names=target.store.sourceNames(book.optString("id"));else{names=new ArrayList<>();JSONArray parts=book.optJSONArray("sources");if(parts==null)parts=book.optJSONArray("parts");if(parts!=null)for(int i=0;i<parts.length();i++)names.add(new File(parts.optString(i)).getName());}handler.post(()->{if(destroyed||target!=lib||!bookVisible(book))return;LinearLayout body=column();ListView files=new ListView(this);files.setAdapter(choicesAdapter(names));body.addView(files,new LinearLayout.LayoutParams(-1,dp(340)));sheet("文件名称 · "+names.size(),body);});});}
     private boolean allPhotosAllowed() { return Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager() || checkSelfPermission(Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES : android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
     private boolean canReadPhotos() { return allPhotosAllowed() || Build.VERSION.SDK_INT >= 34 && checkSelfPermission(android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
     private void chooseCover(JSONObject book) { coverTarget = book; if (canReadPhotos()) openCoverGallery(book); else requestCoverPhotos(book); }
@@ -705,22 +742,28 @@ public final class NativeActivity extends Activity {
     }
     private void applyDocumentInfo(JSONObject book, Library.Document loaded) { set(book, "chapterCount", loaded.toc.size()); set(book, "length", loaded.text.length()); set(book, "contentHash", loaded.contentHash); set(book, "fileSize", loaded.fileSize); set(book, "contentSignature", loaded.signature); }
     private void batchShelf() {
+        if(!prepareCounts(this::batchShelf))return;
         if (selectedBooks.isEmpty()) { toast("请先选择书籍"); return; }
         LinkedHashSet<String> targets = new LinkedHashSet<>(); LinearLayout body = categoryChoices(targets); Dialog d = sheet("批量添加到书架", body);
-        body.addView(button("添加到所选书架", true, () -> { if (targets.isEmpty()) { toast("请勾选分类"); return; } for (JSONObject b : lib.books) if (selectedBooks.contains(b.optString("id"))) { LinkedHashSet<String> ids = new LinkedHashSet<>(Library.shelfIds(b)); ids.addAll(targets); Library.setShelfIds(b, ids); } selectedBooks.clear(); selectionMode = false; d.dismiss(); organizeAndRefresh(); }));
+        body.addView(button("添加到所选书架", true, () -> { if (targets.isEmpty()) { toast("请勾选分类"); return; }Set<String> books=new LinkedHashSet<>(selectedBooks);d.dismiss();editBooks(()->books,b->{LinkedHashSet<String> ids=new LinkedHashSet<>(Library.shelfIds(b));ids.addAll(targets);Library.setShelfIds(b,ids);},true,null); }));
     }
     private void batchRemoveShelf() {
+        if(!prepareCounts(this::batchRemoveShelf))return;
         if (selectedBooks.isEmpty()) { toast("请先选择书籍"); return; }
         Set<String> books = new HashSet<>(selectedBooks);
         if (active.equals("private") && privacyMode) { changePrivacy(books, false); return; }
-        if (active.equals("recent")) { for (JSONObject book : lib.books) if (books.contains(book.optString("id"))) set(book, "hiddenRecent", true); selectedBooks.clear(); selectionMode = false; persist(); showShelf(); return; }
+        if (active.equals("recent")) {editBooks(()->books,b->set(b,"hiddenRecent",true),false,null);return;}
         if (!isBuiltinShelf(active)) { removeMemberships(books, Collections.singleton(active)); return; }
         LinkedHashSet<String> targets = new LinkedHashSet<>(); LinearLayout body = column(); body.addView(bookCategories(targets)); Dialog dialog = sheet("移出书架", body);
         body.addView(button("移出所选书架", false, () -> { if (targets.isEmpty()) { toast("请勾选要移出的分类"); return; } dialog.dismiss(); removeMemberships(books, targets); }));
     }
     private void removeMemberships(Set<String> books, Collection<String> targets) {
-        for (JSONObject book : lib.books) if (books.contains(book.optString("id"))) { List<String> ids = Library.shelfIds(book); ids.removeAll(targets); Library.setShelfIds(book, ids); }
-        selectedBooks.clear(); selectionMode = false; organizeAndRefresh();
+        editBooks(()->books,b->{List<String> ids=Library.shelfIds(b);ids.removeAll(targets);Library.setShelfIds(b,ids);},true,null);
+    }
+    private boolean importEditBlocked() {if(!backgroundImport)return false;toast("请先暂停导入，再管理书库；导入期间可以继续阅读");return true;}
+    private void editBooks(java.util.function.Supplier<Set<String>> selection,java.util.function.Consumer<JSONObject> edit,boolean organize,Runnable after) {
+        if(importEditBlocked())return;showBusy("正在更新书籍…");lib.snapshot();
+        saveIo.execute(()->{try{Set<String> ids=selection.get();int done=0;for(String id:ids){Library.interrupted();JSONObject b=lib.book(id);if(b!=null)edit.accept(b);if(++done%64==0)lib.store.flush();updateBusy(done,ids.size(),"正在更新书籍…");}lib.store.flush();if(organize)lib.prepareBackup(null);else lib.saveSnapshot(lib.state.toString());runOnUiThread(()->{selectedBooks.clear();selectionMode=false;hideBusy();if(after!=null)after.run();else{persist();showShelf();}});}catch(Exception e){runOnUiThread(this::hideBusy);toast("更新未完成，已完成的修改已保留："+e.getMessage());}});
     }
     private void confirmRemove(Set<String> ids) {
         if (ids.isEmpty()) return;
@@ -732,15 +775,16 @@ public final class NativeActivity extends Activity {
     }
     private boolean hasRemoved() { JSONArray removed = lib.state.optJSONArray("removedBooks"); return removed != null && removed.length() > 0; }
     private void performRemove(Set<String> ids, Runnable after) {
-        showBusy("正在移除备份和记录…"); handler.removeCallbacks(exportTask);
-        JSONObject snapshot; try { snapshot = new JSONObject(lib.snapshot()); } catch (Exception e) { hideBusy(); toast(e.getMessage()); return; }
+        if (importEditBlocked()) return;
+        showBusy("正在移除备份和记录…"); handler.removeCallbacks(exportTask);lib.snapshot();
         saveIo.execute(() -> { try {
-            JSONObject updated = lib.removeBooks(snapshot, ids, this::updateBusy);
-            runOnUiThread(() -> { lib.state = updated; lib.books.clear(); JSONArray books = updated.optJSONArray("books"); if (books != null) for (int i = 0; i < books.length(); i++) lib.books.add(books.optJSONObject(i));
+            lib.removeBooks(null, ids, this::updateBusy);
+            runOnUiThread(() -> {
                 selectedBooks.clear(); selectionMode = false; coverCache.evictAll(); hideBusy(); persist(); showShelf(); if (!lib.maintenanceWarning.isEmpty()) toast(lib.maintenanceWarning); if (after != null) after.run(); });
         } catch (Exception e) { runOnUiThread(this::hideBusy); toast("移除未完成：" + e.getMessage()); } });
     }
     private void shelfSettings() {
+        if(importEditBlocked())return;
         LinearLayout body = column(); Dialog d = sheet("书架设置", body);
         body.addView(text("小说备份文件夹", 16, uiInk())); gap(body, 6);
         TextView location = text(lib.backup.getPath().replace(android.os.Environment.getExternalStorageDirectory().getPath() + "/", ""), 15, uiMuted()); location.setTextIsSelectable(true); padding(location, 12, 10); location.setBackground(shape(shelfDark() ? 0xff30382e : 0xffe9ede3, 8)); body.addView(location, new LinearLayout.LayoutParams(-1, -2));
@@ -774,17 +818,24 @@ public final class NativeActivity extends Activity {
         changeBackupFolder(target);
     }
     private void changeBackupFolder(File target) {
-        if (target.equals(lib.backup)) return;
-        if (new File(target, "userdata.json").isFile() && !lib.books.isEmpty() && !Library.emptyPortable(target)) { toast("目标已有书库，请选择其他文件夹，避免覆盖"); return; }
-        if (new File(target, "userdata.json").isFile() && lib.books.isEmpty()) {
-            String previous = lib.backup.getPath();
-            try { new JSONObject(new String(read(new FileInputStream(new File(target, "userdata.json")), 32_000_000), StandardCharsets.UTF_8)); if (!getSharedPreferences("storage", 0).edit().putString("backupPath", target.getPath()).commit()) throw new IOException("无法保存文件夹设置"); lib = new Library(this, true); list = lib.state.optBoolean("list"); shelfPage = 0; persist(); showShelf(); }
-            catch (Exception error) { if (!getSharedPreferences("storage", 0).edit().putString("backupPath", previous).commit()) toast("原备份路径设置未能恢复：" + previous); toast("打开备份失败：" + error.getMessage()); } return;
-        }
-        showBusy("正在迁移备份文件夹…"); handler.removeCallbacks(exportTask);
-        JSONObject snapshot; try { snapshot = new JSONObject(lib.snapshot()); } catch (Exception error) { hideBusy(); toast(error.getMessage()); return; }
-        saveIo.execute(() -> { try { JSONObject moved = lib.relocate(target, snapshot); runOnUiThread(() -> { lib.state = moved; lib.applyPaths(moved); hideBusy(); persist(); showShelf(); toast(lib.maintenanceWarning.isEmpty() ? "备份文件夹已更改" : lib.maintenanceWarning); }); }
-            catch (Exception error) { runOnUiThread(this::hideBusy); toast("迁移未完成：" + error.getMessage()); } });
+        if(target.equals(lib.backup)||importEditBlocked())return;
+        showBusy("正在准备备份文件夹…");handler.removeCallbacks(exportTask);final Library previous=lib;final String settings=lib.snapshot(),oldPath=lib.backup.getPath();
+        saveIo.execute(()->{try{
+            boolean existing=new File(target,"userdata.json").isFile()||new File(target,BookStore.FILE).isFile();
+            if(existing&&previous.books.isEmpty()){
+                previous.saveSnapshot(settings);
+                if(!getSharedPreferences("storage",0).edit().putString("backupPath",target.getPath()).commit())throw new IOException("无法保存文件夹设置");
+                Library loaded;
+                try{loaded=new Library(getApplicationContext(),true);loaded.cleanupPending();}
+                catch(Exception e){getSharedPreferences("storage",0).edit().putString("backupPath",oldPath).commit();throw e;}
+                previous.store.close();
+                runOnUiThread(()->{if(destroyed){loaded.store.close();return;}lib=loaded;countsRevision=-1;pageRevision=-1;shelfPage=0;hideBusy();persist();showShelf();});
+            }else{
+                if(existing)throw new IOException("目标已有书库，请选择空文件夹，避免覆盖");
+                previous.relocate(target,null);
+                runOnUiThread(()->{if(destroyed)return;countsRevision=-1;pageRevision=-1;hideBusy();persist();showShelf();toast(previous.maintenanceWarning.isEmpty()?"备份文件夹已更改":previous.maintenanceWarning);});
+            }
+        }catch(Exception error){runOnUiThread(this::hideBusy);toast("备份文件夹未更改："+error.getMessage());}});
     }
     private byte[] compressedCover(Uri uri) throws Exception {
         byte[] raw = read(getContentResolver().openInputStream(uri), 32_000_000); BitmapFactory.Options options = new BitmapFactory.Options(); options.inJustDecodeBounds = true; BitmapFactory.decodeByteArray(raw, 0, raw.length, options);
@@ -795,14 +846,16 @@ public final class NativeActivity extends Activity {
         ByteArrayOutputStream output = new ByteArrayOutputStream(); cover.compress(Bitmap.CompressFormat.JPEG, 82, output); cover.recycle(); return output.toByteArray();
     }
 
-    private void openBook(JSONObject book, int offset) {
-        if (!bookVisible(book)) return;
-        if (!book.optString("directory").isEmpty() && !lib.canWrite()) { ensureStorage(() -> { JSONObject restored = lib.book(book.optString("id")); if (restored != null) openBook(restored, offset); }); return; }
+    private void openBook(JSONObject requested, int offset) {
+        if(destroyed)return;
+        if (!bookVisible(requested)) return;
+        if (!requested.optString("directory").isEmpty() && !lib.canWrite()) { ensureStorage(() -> openBook(requested, offset)); return; }
         if (importing) return; importing = true;
+        final Library target=lib;
         long started = SystemClock.elapsedRealtime();
         Runnable spinner = () -> showBusy("正在打开…"); handler.postDelayed(spinner, 180);
-        openIo.execute(() -> { try { Library.Document loaded = lib.document(book); if (loaded.sections.isEmpty()) throw new IOException("空文件");
-            runOnUiThread(() -> { handler.removeCallbacks(spinner); hideBusy(); if (!bookVisible(book)) return; document = loaded; current = book; controlsVisible = false; collapsedChapters.clear(); source = loaded.text; toc = loaded.toc; chapters = loaded.sections;
+        openIo.execute(() -> { try {JSONObject book=target.book(requested.optString("id"));if(book==null)throw new IOException("书籍已移除");Library.Document loaded = target.document(book); if (loaded.sections.isEmpty()) throw new IOException("空文件");
+            runOnUiThread(() -> { if(destroyed||target!=lib)return;handler.removeCallbacks(spinner); hideBusy(); if (!bookVisible(book)) return; document = loaded; current = book; controlsVisible = false; collapsedChapters.clear(); source = loaded.text; toc = loaded.toc; chapters = loaded.sections;
                 set(current, "lastRead", System.currentTimeMillis()); current.remove("hiddenRecent"); applyDocumentInfo(current, loaded); buildReader(offset < 0 ? current.optInt("position") : offset); persist();
                 View openedSurface = readerSurface; openedSurface.getViewTreeObserver().addOnPreDrawListener(new android.view.ViewTreeObserver.OnPreDrawListener() { public boolean onPreDraw() { openedSurface.getViewTreeObserver().removeOnPreDrawListener(this); android.util.Log.d("LiNoRr", "reader_open_ms=" + (SystemClock.elapsedRealtime() - started)); return true; } }); });
         } catch (Exception e) { runOnUiThread(() -> { handler.removeCallbacks(spinner); hideBusy(); }); toast("无法打开：" + e.getMessage()); } });
@@ -835,6 +888,7 @@ public final class NativeActivity extends Activity {
         systemBars(show);
     }
     private void buildReader(int offset) {
+        if(destroyed)return;
         finishSeek(false);
         ++paginationGeneration; pageTotals = null;
         if (indexTask != null) handler.removeCallbacks(indexTask);
@@ -924,11 +978,11 @@ public final class NativeActivity extends Activity {
         if (saved != null && geometry.equals(saved.optString("key"))) { int[] cached = savedPageTotals(saved.optJSONArray("totals"), bookChapters.size() + 1); if (cached != null) { pageTotals = cached; pageIndexSource = "userdata"; positionUI(); android.util.Log.d("LiNoRr", "page_index_source=userdata"); return; } }
         set(current, "lastPageCount", 0);
         final JSONObject config = json("key", geometry, "font", lib.prefs().optString("font"), "fontKey", fontLayoutKey(), "size", lib.prefs().optDouble("size"), "line", lib.prefs().optDouble("line"), "paragraph", lib.prefs().optDouble("paragraph"), "width", readerSurface.getWidth(), "height", readerSurface.getHeight(), "density", getResources().getDisplayMetrics().scaledDensity, "mode", isPagedMode() ? "paged" : "scroll");
-        final File pageCache = new File(lib.cache, current.optString("id") + "-" + Integer.toHexString(geometry.hashCode()) + ".pages");
+        final File pageCache = new File(new File(lib.cache,current.optString("id")),Integer.toHexString(geometry.hashCode()) + ".pages");
         pageIo.execute(() -> {
             int[] totals = new int[bookChapters.size() + 1];
             try (DataInputStream input = new DataInputStream(new BufferedInputStream(new FileInputStream(pageCache)))) {
-                if (input.readUTF().equals(geometry) && input.readInt() == totals.length) { for (int i = 0; i < totals.length; i++) totals[i] = input.readInt(); handler.post(() -> installPageTotals(generation, totals, config, "disk")); return; }
+                if (input.readUTF().equals(geometry) && input.readInt() == totals.length) { for (int i = 0; i < totals.length; i++) {totals[i]=input.readInt();if(i==0?totals[i]!=0:totals[i]<=totals[i-1]||totals[i]>10000000)throw new IOException("分页缓存无效");} handler.post(() -> installPageTotals(generation, totals, config, "disk")); return; }
             } catch (Exception ignored) {}
             for (int i = 0; i < bookChapters.size(); i++) {
                 if (generation != paginationGeneration || Thread.currentThread().isInterrupted()) return;
@@ -1094,6 +1148,7 @@ public final class NativeActivity extends Activity {
     }
     private void back() { finishSeek(false); capture(); persist(); if (progressTask != null) handler.removeCallbacks(progressTask); collapseShelfTools(); showShelf(); }
     private void catalog() {
+        if(destroyed)return;
         if (toc.isEmpty()) { LinearLayout empty = column(); empty.addView(text("未识别到章节", 16, uiMuted())); Dialog d = sheet("目录", empty); sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); }); empty.addView(button("返回阅读", false, d::dismiss)); return; }
         List<BookParser.Chapter> chapters = toc;
         LinearLayout body = column(); EditText search = input("搜索章节", ""); search.setContentDescription("搜索章节输入框"); search.setTextSize(17); LinearLayout searchLine = row(); weighted(searchLine, search); body.addView(searchLine); String[] chapterQuery = {""}; ListView entries = new ListView(this); body.addView(entries, new LinearLayout.LayoutParams(-1, dp(getResources().getConfiguration().screenHeightDp / 2))); Dialog d = sheet("目录 · " + chapters.size() + " 章", body);
@@ -1157,7 +1212,7 @@ public final class NativeActivity extends Activity {
         if (marks != null) for (int i = 0; i < marks.length(); i++) { JSONObject mark = marks.optJSONObject(i); if (mark != null && mark.optInt("offset", -1) >= start && mark.optInt("offset", -1) < end) { filled = true; break; } }
         if (bookmarkFilled != filled) { bookmarkFilled = filled; bookmarkButton.setSelected(filled); bookmarkButton.setImageDrawable(new ReaderIcon(filled ? "bookmark_filled" : "bookmark", readerInk(), getResources().getDisplayMetrics().density)); }
     }
-    private void addMark() { capture(); JSONArray marks = bookmarks(); for (int i = 0; i < marks.length(); i++) if (Math.abs(marks.optJSONObject(i).optInt("offset") - current.optInt("position")) < 80) { toast("这个位置已经有书签"); return; } String title = chapters.get(chapter).title; marks.put(json("offset", current.optInt("position"), "title", title.isEmpty() ? current.optString("title") : title, "date", System.currentTimeMillis())); updateBookmarkIcon(); persist(); toast("已添加书签"); }
+    private void addMark() { capture(); JSONArray marks = bookmarks(); for (int i = 0; i < marks.length(); i++) if (Math.abs(marks.optJSONObject(i).optInt("offset") - current.optInt("position")) < 80) { toast("这个位置已经有书签"); return; } String title = chapters.get(chapter).title; synchronized(current){marks.put(json("offset", current.optInt("position"), "title", title.isEmpty() ? current.optString("title") : title, "date", System.currentTimeMillis()));} updateBookmarkIcon(); persist(); toast("已添加书签"); }
     private void marks() {
         capture(); LinearLayout body = column(); Dialog d = sheet("我的书签", body); LinearLayout entries = column();
         body.addView(button("添加当前位置书签", false, () -> { addMark(); renderMarks(entries, d); })); body.addView(entries); renderMarks(entries, d);
@@ -1165,7 +1220,7 @@ public final class NativeActivity extends Activity {
     private void renderMarks(LinearLayout body, Dialog dialog) {
         body.removeAllViews(); JSONArray marks = bookmarks();
         if (marks.length() == 0) body.addView(text("还没有书签", 15, MUTED));
-        for (int i = 0; i < marks.length(); i++) { int index = i; JSONObject mark = marks.optJSONObject(i); LinearLayout r = row(); weighted(r, button(mark.optString("title") + " · " + (int) (100L * mark.optInt("offset") / Math.max(1, source.length())) + "%", false, () -> { jump(mark.optInt("offset")); persist(); dialog.dismiss(); })); Button remove = button("×", false, () -> { marks.remove(index); updateBookmarkIcon(); persist(); renderMarks(body, dialog); }); remove.setContentDescription("删除书签" + mark.optString("title")); r.addView(remove); body.addView(r); }
+        for (int i = 0; i < marks.length(); i++) { int index = i; JSONObject mark = marks.optJSONObject(i); LinearLayout r = row(); weighted(r, button(mark.optString("title") + " · " + (int) (100L * mark.optInt("offset") / Math.max(1, source.length())) + "%", false, () -> { jump(mark.optInt("offset")); persist(); dialog.dismiss(); })); Button remove = button("×", false, () -> { synchronized(current){marks.remove(index);} updateBookmarkIcon(); persist(); renderMarks(body, dialog); }); remove.setContentDescription("删除书签" + mark.optString("title")); r.addView(remove); body.addView(r); }
     }
     private void settings() {
         capture(); LinearLayout body = column(); Dialog d = sheet("阅读设置", body); d.setOnDismissListener(dialog -> body.clearFocus());
@@ -1295,6 +1350,7 @@ public final class NativeActivity extends Activity {
         render.run();
     }
     private void fonts() {
+        if(importEditBlocked())return;
         List<String> names = new ArrayList<>(Arrays.asList("系统默认", "系统衬线", "等宽字体", "自选字体", "导入 TTF / OTF 字体…")); List<String> values = new ArrayList<>(names);
         File[] fs = new File("/system/fonts").listFiles(); if (fs != null) { Arrays.sort(fs, Comparator.comparing(File::getName)); for (File f : fs) if (f.getName().matches(".*\\.(ttf|otf|ttc)$")) { names.add(f.getName()); values.add(f.getPath()); } }
         LinearLayout body = column(); ListView options = new ListView(this); options.setAdapter(choicesAdapter(names)); body.addView(options, new LinearLayout.LayoutParams(-1, dp(360))); Dialog d = sheet("选择字体", body);
@@ -1302,6 +1358,8 @@ public final class NativeActivity extends Activity {
     }
 
     private void importDialog() {
+        if(backgroundImport){showImportProgress();return;}
+        if(!prepareCounts(this::importDialog))return;
         LinearLayout body = column(); RadioGroup modes = new RadioGroup(this); RadioButton separate = new RadioButton(this); separate.setId(View.generateViewId()); separate.setText(R.string.import_separate); RadioButton merged = new RadioButton(this); merged.setId(View.generateViewId()); merged.setText(R.string.import_merged); separate.setTextSize(14); merged.setTextSize(14); modes.addView(separate); modes.addView(merged); separate.setChecked(true); body.addView(modes); gap(body, 8); LinkedHashSet<String> selected = new LinkedHashSet<>(); body.addView(bookCategories(selected, true)); gap(body, 12); Dialog d = sheet("导入书籍", body);
         importPrivate = false; CheckBox privateBox = new CheckBox(this); privateBox.setText("添加到隐私"); privateBox.setTextSize(16); if (privacyMode) body.addView(privateBox);
         Runnable prepare = () -> { importPrivate = privacyMode && privateBox.isChecked(); grouping = merged.isChecked() ? "merged" : "separate"; importShelves.clear(); importShelves.addAll(selected); importShelf = selected.isEmpty() ? "default" : selected.iterator().next(); d.dismiss(); };
@@ -1312,73 +1370,125 @@ public final class NativeActivity extends Activity {
     private Entry entry(Uri uri, String path) throws Exception {
         String name = path; long size = 0;
         try (Cursor c = getContentResolver().query(uri, new String[]{OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE}, null, null, null)) { if (c != null && c.moveToFirst()) { if (name.isEmpty()) name = c.getString(0); size = c.getLong(1); } }
-        return new Entry(uri, name, size);
+        Entry e=new Entry(uri,name,size);budgetEntry(e);return e;
     }
+    private void budgetEntry(Entry entry)throws IOException{scanMetadataBytes+=96L+entry.path.length()*2L+entry.uri.toString().length()*2L;if(scanMetadataBytes>Math.min(64L*1024*1024,Runtime.getRuntime().maxMemory()/8))throw new IOException("文件列表超过安全内存限制，请减少单次导入数量");}
     private void walk(Uri tree, String id, String prefix, List<Entry> entries, int depth) throws Exception {
+        checkImportCanceled();
         if (depth > 20) throw new IOException("文件夹层级过深");
         try (Cursor c = getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, id), new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE}, null, null, null)) {
-            while (c != null && c.moveToNext()) { String child = c.getString(0), name = c.getString(1); if (DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2))) walk(tree, child, prefix + name + "/", entries, depth + 1); else if (name.toLowerCase(Locale.ROOT).matches(".*\\.(txt|png|jpe?g|webp)$")) entries.add(new Entry(DocumentsContract.buildDocumentUriUsingTree(tree, child), prefix + name, c.getLong(3))); }
+            while (c != null && c.moveToNext()) {checkImportCanceled();String child=c.getString(0),name=c.getString(1);if(DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(2)))walk(tree,child,prefix+name+"/",entries,depth+1);else if(name.toLowerCase(Locale.ROOT).matches(".*\\.(txt|png|jpe?g|webp)$")){Entry e=new Entry(DocumentsContract.buildDocumentUriUsingTree(tree,child),prefix+name,c.getLong(3));budgetEntry(e);entries.add(e);}}
         }
     }
     private void scan(Uri tree) {
-        showBusy("正在导入文件夹…");
+        startImportProgress();
         io.execute(() -> { try {
             List<Entry> entries = new ArrayList<>(); String id = DocumentsContract.getTreeDocumentId(tree); walk(tree, id, "", entries, 0);
             String name = entry(DocumentsContract.buildDocumentUriUsingTree(tree, id), "").path;
             importEntries(entries, name, tree.toString(), null);
-        } catch (Exception e) { runOnUiThread(this::hideBusy); toast("无法读取文件夹：" + e.getMessage()); } });
+        } catch (Exception e) { runOnUiThread(()->{backgroundImport=false;if(importProgressDialog!=null)importProgressDialog.dismiss();}); toast("无法读取文件夹：" + e.getMessage()); } });
     }
     private Entry imageFor(String path, List<Entry> images, String folder) {
         int slash = path.lastIndexOf('/'); String parent = slash < 0 ? "" : path.substring(0, slash + 1), stem = path.substring(slash + 1).replaceFirst("(?i)\\.txt$", ""); Entry fallback = null;
         for (Entry e : images) { int s = e.path.lastIndexOf('/'); String p = s < 0 ? "" : e.path.substring(0, s + 1); if (!p.equals(parent)) continue; String name = e.path.substring(s + 1).replaceFirst("\\.[^.]+$", ""); if (name.equalsIgnoreCase(stem)) return e; if (name.matches("(?i)cover|folder|封面") || name.equalsIgnoreCase(folder)) fallback = e; } return fallback;
     }
-    private void importEntries(List<Entry> entries, String name, String folder, JSONObject metadata) {
-        List<Entry> texts = new ArrayList<>(), images = new ArrayList<>();
-        for (Entry e : entries) { if (e.path.toLowerCase(Locale.ROOT).endsWith(".txt")) texts.add(e); else if (e.path.toLowerCase(Locale.ROOT).matches(".*\\.(png|jpe?g|webp)$")) images.add(e); }
-        texts.sort((a, b) -> BookParser.naturalCompare(a.path, b.path));
-        if (texts.isEmpty()) { runOnUiThread(this::hideBusy); toast("没有找到 TXT 文件"); return; }
-        List<List<Entry>> groups = new ArrayList<>(); if (grouping.equals("merged")) groups.add(texts); else for (Entry e : texts) groups.add(Collections.singletonList(e));
-        List<JSONObject> imported = new ArrayList<>(); List<String> failed = new ArrayList<>(); Map<String, JSONObject> hashes = new HashMap<>(); Set<String> indexed = new HashSet<>();
-        for (JSONObject book : lib.books) if (!book.optString("contentHash").isEmpty()) { hashes.put(book.optString("contentHash"), book); indexed.add(book.optString("id")); }
-        int duplicates = 0, completed = 0, work = texts.size() + groups.size(); updateBusy(0, work, "准备导入 " + texts.size() + " 个 TXT 文件…");
-        for (List<Entry> group : groups) {
-            File stage = null; int groupStart = completed;
-            try {
-                String title = group.size() > 1 ? name : new File(group.get(0).path).getName().replaceFirst("(?i)\\.txt$", "");
-                String category = shelfName(importShelf); if (isBuiltinShelf(importShelf)) category = "无分类";
-                stage = lib.createDirectory(category, ".import-" + UUID.randomUUID()); JSONArray parts = new JSONArray(), paths = new JSONArray(); Set<String> used = new HashSet<>(); List<File> rawFiles = new ArrayList<>();
-                runOnUiThread(() -> { if (busyText != null) busyText.setText(getString(R.string.organizing, title)); });
-                long total = 0; int limit = (int) Math.min(80_000_000, Runtime.getRuntime().maxMemory() / 8);
-                for (Entry e : group) {
-                    byte[] raw = read(getContentResolver().openInputStream(e.uri), (int) (limit - total)); total += raw.length;
-                    String decoded = BookParser.decode(raw); if (decoded.indexOf('\0') >= 0 || decoded.trim().isEmpty()) throw new IOException("不是有效的 TXT 正文");
-                    String filename = BackupFiles.name(new File(e.path).getName()), original = filename; int duplicate = 2;
-                    while (!used.add(filename.toLowerCase(Locale.ROOT))) filename = BackupFiles.numbered(original, duplicate++);
-                    File file = new File(stage, filename); BackupFiles.write(file, raw); rawFiles.add(file); parts.put(filename); paths.put(e.path);
-                    updateBusy(++completed, work, "已备份：" + filename);
-                }
-                String hash = BookIdentity.fingerprint(rawFiles); JSONObject previous = hashes.get(hash);
-                if (previous == null) for (JSONObject oldBook : lib.books) if (!indexed.contains(oldBook.optString("id")) && lib.fileSize(oldBook) == total) {
-                    indexed.add(oldBook.optString("id")); try { String existing = BookIdentity.fingerprint(lib.partFiles(oldBook)); hashes.put(existing, oldBook); if (existing.equals(hash)) { previous = oldBook; break; } } catch (Exception ignored) {}
-                }
-                if (previous != null) { duplicates++; continue; }
-                String id = hash.substring(0, 24); JSONObject book = json("id", id, "contentHash", hash, "title", title, "shelf", importShelf, "private", importPrivate, "position", 0, "marks", new JSONArray(), "added", System.currentTimeMillis(), "fileSize", total); Library.setShelfIds(book, importShelves.isEmpty() ? Arrays.asList(importShelf) : importShelves);
-                Entry image = imageFor(group.get(0).path, images, name); if (image == null && group.size() > 1) image = imageFor(name + ".txt", images, name);
-                if (image != null) try { atomic(new File(stage, "cover.jpg"), compressedCover(image.uri)); } catch (Exception ignored) {}
-                File target = BackupFiles.available(stage.getParentFile(), title); java.nio.file.Files.move(stage.toPath(), target.toPath()); stage = null;
-                set(book, "directory", lib.relative(target)); set(book, "parts", parts); set(book, "sources", paths); set(book, "organizedTitle", title); set(book, "directoryName", target.getName()); set(book, "cover", new File(target, "cover.jpg").isFile());
-                Library.Document loaded = lib.document(book); set(book, "length", loaded.text.length()); set(book, "chapterCount", loaded.toc.size()); set(book, "contentSignature", loaded.signature); imported.add(book); hashes.put(hash, book);
-            } catch (Exception e) { failed.add(new File(group.get(0).path).getName() + "：" + e.getMessage()); }
-            finally { if (stage != null) deleteStaging(stage); completed = groupStart + group.size() + 1; updateBusy(completed, work, "正在整理书籍…"); }
-        }
-        final int skipped = duplicates;
-        runOnUiThread(() -> { for (Map.Entry<String,JSONObject> entry : hashes.entrySet()) set(entry.getValue(), "contentHash", entry.getKey()); lib.books.addAll(imported); hideBusy(); if (!imported.isEmpty()) { active = "all"; shelfPage = 0; } persist(); showShelf(); toast("已导入 " + imported.size() + " 本，跳过重复 " + skipped + " 本" + (failed.isEmpty() ? "" : "；失败 " + failed.size() + " 本，" + failed.get(0))); });
+    private Map<String,Entry> coverIndex(List<Entry> images) {
+        Map<String,Entry> index=new HashMap<>();
+        for(Entry e:images){int slash=e.path.lastIndexOf('/');String parent=slash<0?"":e.path.substring(0,slash+1);String name=e.path.substring(slash+1).replaceFirst("\\.[^.]+$","").toLowerCase(Locale.ROOT);index.putIfAbsent(parent+name,e);}
+        return index;
     }
+    private Entry indexedCover(String path,Map<String,Entry> images,String folder) {
+        int slash=path.lastIndexOf('/');String parent=slash<0?"":path.substring(0,slash+1),stem=path.substring(slash+1).replaceFirst("(?i)\\.txt$","").toLowerCase(Locale.ROOT);
+        for(String name:new String[]{stem,"cover","folder","封面",folder.toLowerCase(Locale.ROOT)}){Entry image=images.get(parent+name);if(image!=null)return image;}return null;
+    }
+    private void importEntries(List<Entry> entries,String name,String folder,JSONObject metadata) {
+        int priority=android.os.Process.getThreadPriority(android.os.Process.myTid());
+        // BACKGROUND also throttles shared-storage I/O on Android; use a modest CPU
+        // niceness instead so FUSE writes cannot stall each imported file for hundreds of ms.
+        try{android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT+1);importBatch(entries,name,folder,metadata);}
+        finally{android.os.Process.setThreadPriority(priority);}
+    }
+    private void importBatch(List<Entry> entries,String name,String folder,JSONObject metadata) {
+        backgroundImport=true; final Library target=lib;
+        final boolean merge=grouping.equals("merged"),privateBooks=importPrivate;
+        final List<String> categories=new ArrayList<>(importShelves);final String shelf=importShelf,category=isBuiltinShelf(shelf)?"无分类":shelfName(shelf);
+        List<Entry> texts=new ArrayList<>(),images=new ArrayList<>();
+        for(Entry e:entries){if(e.path.toLowerCase(Locale.ROOT).endsWith(".txt"))texts.add(e);else images.add(e);}
+        texts.sort((a,b)->BookParser.naturalCompare(a.path,b.path));Map<String,Entry> covers=coverIndex(images);
+        try{target.cleanupPending();if(!target.store.operationIds().isEmpty())throw new IOException("仍有未完成的备份操作，请先检查文件访问和剩余空间");target.store.flush();}catch(Exception e){runOnUiThread(()->{backgroundImport=false;if(importProgressDialog!=null)importProgressDialog.dismiss();});toast("书库暂时无法保存："+e.getMessage());return;}
+        if(texts.isEmpty()){runOnUiThread(()->{backgroundImport=false;if(importProgressDialog!=null)importProgressDialog.dismiss();if(importing)hideBusy();});toast("没有找到 TXT 文件");return;}
+        List<List<Entry>> groups=new ArrayList<>();if(merge)groups.add(texts);else for(Entry e:texts)groups.add(Collections.singletonList(e));
+        int imported=0,duplicates=0,failed=0,completed=0;String firstFailure="";
+        Set<String> attemptedLegacy=new HashSet<>();
+        Set<Long> attemptedSizes=new HashSet<>();Set<String> pendingHashes=new HashSet<>();List<Library.PendingImport> ready=new ArrayList<>();
+        importTotal=texts.size()+groups.size();
+        groupLoop: for(List<Entry> group:groups){
+            if(cancelImport||destroyed||Thread.currentThread().isInterrupted())break;
+            File stage=null;int groupStart=completed;
+            try {
+                String title=group.size()>1?name:new File(group.get(0).path).getName().replaceFirst("(?i)\\.txt$","");
+                JSONArray parts=new JSONArray(),paths=new JSONArray();Set<String> used=new HashSet<>();Map<String,Integer> counters=new HashMap<>();List<File> rawFiles=new ArrayList<>();
+                long total=0;int characters=0;boolean previousNewline=true;String hash="";
+                int limit=(int)Math.min(80_000_000,Runtime.getRuntime().maxMemory()/8);
+                for(Entry e:group){
+                    checkImportCanceled();byte[] raw=readImport(e.uri,(int)(limit-total));total+=raw.length;
+                    if(group.size()==1){
+                        hash=BookIdentity.fingerprint(raw);
+                        if(attemptedSizes.add(total))for(String old:target.store.missingHashes(total))if(attemptedLegacy.add(old)){checkImportCanceled();try{JSONObject b=target.book(old);set(b,"contentHash",BookIdentity.fingerprint(target.partFiles(b)));target.store.flush();}catch(InterruptedIOException ex){throw ex;}catch(Exception ignored){}}
+                        if(pendingHashes.contains(hash)||target.store.hasHash(hash)){duplicates++;continue groupLoop;}
+                    }
+                    String decoded=BookParser.decode(raw);if(decoded.indexOf('\0')>=0||decoded.trim().isEmpty())throw new IOException("不是有效的 TXT 正文");
+                    if(!previousNewline)characters++;characters+=decoded.length();previousNewline=decoded.endsWith("\n");
+                    if(characters>Library.textLimit())throw new IOException("正文超过当前设备的安全内存上限");
+                    if(stage==null)stage=target.createStaging();
+                    String filename=BackupFiles.name(new File(e.path).getName()),original=filename,key=filename.toLowerCase(Locale.ROOT);int duplicate=counters.getOrDefault(key,2);
+                    while(!used.add(filename.toLowerCase(Locale.ROOT)))filename=BackupFiles.numbered(original,duplicate++);
+                    counters.put(key,duplicate);File file=new File(stage,filename);BackupFiles.writeExisting(file,raw);rawFiles.add(file);parts.put(filename);paths.put(e.path);
+                    importUpdate(++completed,importTotal,"已备份："+filename);
+                }
+                if(stage==null)continue;
+                if(hash.isEmpty())hash=BookIdentity.fingerprint(rawFiles);
+                if(group.size()>1&&attemptedSizes.add(total))for(String old:target.store.missingHashes(total))if(attemptedLegacy.add(old)){checkImportCanceled();try{JSONObject b=target.book(old);set(b,"contentHash",BookIdentity.fingerprint(target.partFiles(b)));target.store.flush();}catch(InterruptedIOException ex){throw ex;}catch(Exception ignored){}}
+                if(pendingHashes.contains(hash)||target.store.hasHash(hash)){duplicates++;continue;}
+                JSONObject book=json("id",hash.substring(0,24),"contentHash",hash,"title",title,"shelf",shelf,"private",privateBooks,"position",0,"marks",new JSONArray(),"added",System.currentTimeMillis(),"fileSize",total,"length",characters,"parts",parts,"sources",paths);
+                Library.setShelfIds(book,categories.isEmpty()?Arrays.asList(shelf):categories);
+                Entry cover=indexedCover(group.get(0).path,covers,name);if(cover==null&&group.size()>1)cover=indexedCover(name+".txt",covers,name);
+                if(cover!=null)try{atomic(new File(stage,"cover.jpg"),compressedCover(cover.uri));}catch(InterruptedIOException ex){throw ex;}catch(Exception ignored){}
+                checkImportCanceled();ready.add(new Library.PendingImport(stage,book,category));pendingHashes.add(hash);stage=null;
+                if(ready.size()>=32){try{target.commitImports(ready);imported+=ready.size();ready.clear();pendingHashes.clear();}catch(Exception e){failed+=ready.size();if(firstFailure.isEmpty())firstFailure="书库提交未完成，重开应用后会恢复："+e.getMessage();ready.clear();break groupLoop;}}
+            } catch(InterruptedIOException e){cancelImport=true;break;}
+            catch(Exception e){if(cancelImport||destroyed)break groupLoop;failed++;if(firstFailure.isEmpty())firstFailure=new File(group.get(0).path).getName()+"："+e.getMessage();}
+            finally{
+                if(stage!=null)deleteStaging(stage);
+                completed=groupStart+group.size()+1;importUpdate(completed,importTotal,"正在整理书籍…");
+            }
+        }
+        if(!ready.isEmpty())try{target.commitImports(ready);imported+=ready.size();}catch(Exception e){failed+=ready.size();if(firstFailure.isEmpty())firstFailure="书库提交未完成，重开应用后会恢复："+e.getMessage();}
+        final int successes=imported,skipped=duplicates,errors=failed;final String failure=firstFailure;
+        try{target.store.flush();}catch(Exception e){toast("保存未完成："+e.getMessage());}
+        runOnUiThread(()->{
+            backgroundImport=false;if(importProgressDialog!=null)importProgressDialog.dismiss();
+            if(destroyed)return;persist();
+            if(current==null){if(successes>0){active="all";shelfPage=0;}showShelf();}
+            toast((cancelImport?"已暂停；":"")+"已导入 "+successes+" 本，跳过重复 "+skipped+" 本"+(errors==0?"":"；失败 "+errors+" 本，"+failure));
+        });
+    }
+    private void checkImportCanceled() throws InterruptedIOException {Library.interrupted();if(cancelImport||destroyed)throw new InterruptedIOException("导入已暂停");}
+    private byte[] readImport(Uri uri,int limit)throws IOException{InputStream input=getContentResolver().openInputStream(uri);activeImportInput=input;try{checkImportCanceled();return read(input,limit);}finally{activeImportInput=null;if(input!=null)try{input.close();}catch(IOException ignored){}}}
+    private void cancelCurrentImport(){cancelImport=true;InputStream input=activeImportInput;if(input!=null)try{input.close();}catch(IOException ignored){}}
+    private void startImportProgress() {cancelImport=false;backgroundImport=true;scanMetadataBytes=0;importDone=0;importTotal=0;importLabel="正在扫描文件…";showImportProgress();}
+    private void showImportProgress() {
+        if(importProgressDialog!=null&&importProgressDialog.isShowing())return;
+        LinearLayout body=column();importStatus=text(importLabel,15,uiInk());body.addView(importStatus);importProgress=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);body.addView(importProgress,new LinearLayout.LayoutParams(-1,dp(12)));importDetails=text("",14,uiMuted());body.addView(importDetails);
+        importProgressDialog=sheet("导入进度",body);LinearLayout actions=row();weighted(actions,button("继续阅读",false,importProgressDialog::dismiss));weighted(actions,button("暂停导入",false,()->{cancelCurrentImport();importProgressDialog.dismiss();}));body.addView(actions);renderImportProgress();
+    }
+    private void renderImportProgress(){if(importProgressDialog==null||!importProgressDialog.isShowing())return;importStatus.setText(importLabel);importProgress.setIndeterminate(importTotal<=0);if(importTotal>0){importProgress.setMax(importTotal);importProgress.setProgress(importDone);}importDetails.setText(importTotal<=0?"正在准备…":importDone+"/"+importTotal+" · "+Math.min(100,100L*importDone/Math.max(1,importTotal))+"%");}
+    private void importUpdate(int done,int total,String label){importDone=done;importTotal=total;importLabel=label;long now=SystemClock.uptimeMillis();if(now-lastImportUpdate<120&&done<total)return;lastImportUpdate=now;handler.post(()->{if(!destroyed)renderImportProgress();});}
     private void deleteStaging(File directory) {
-        if (!directory.getName().startsWith(".import-")) return;
+        if (!directory.getName().startsWith(".import-")&&!directory.getParentFile().getName().equals(".imports")) return;
         File[] files = directory.listFiles(); if (files != null) for (File file : files) if (file.isFile()) file.delete(); directory.delete();
     }
-    private void updateBusy(int completed, int total, String label) { runOnUiThread(() -> { if (!importing || busyProgress == null) return; busyProgress.setIndeterminate(total <= 0); if (total > 0) { busyProgress.setMax(total); busyProgress.setProgress(Math.min(total, completed)); busyDetails.setText(completed + "/" + total + " · " + (int) (100L * completed / total) + "%"); } if (label != null) busyText.setText(label); }); }
+    private void updateBusy(int completed, int total, String label) { long now=SystemClock.uptimeMillis();if(now-lastBusyUpdate<120&&completed<total)return;lastBusyUpdate=now;runOnUiThread(() -> { if (destroyed||!importing || busyProgress == null) return; busyProgress.setIndeterminate(total <= 0); if (total > 0) { busyProgress.setMax(total); busyProgress.setProgress(Math.min(total, completed)); busyDetails.setText(completed + "/" + total + " · " + (int) (100L * completed / total) + "%"); } if (label != null) busyText.setText(label); }); }
     private void showBusy(String message) {
         importing = true; busyDialog = new Dialog(this); LinearLayout body = column(); body.setGravity(Gravity.CENTER); padding(body, 24, 22); body.setBackground(shape(uiBg(), 15));
         busyText = text(message, 15, uiInk()); busyText.setGravity(Gravity.CENTER); body.addView(busyText, new LinearLayout.LayoutParams(-1, -2)); gap(body, 14);
@@ -1394,7 +1504,7 @@ public final class NativeActivity extends Activity {
         else if (request == COVER && data.getData() != null && coverTarget != null) {
             saveCover(coverTarget, data.getData());
         }
-        else if (request == TXT) { showBusy("正在导入…"); io.execute(() -> { try { List<Entry> entries = new ArrayList<>(); if (data.getClipData() != null) for (int i = 0; i < data.getClipData().getItemCount(); i++) entries.add(entry(data.getClipData().getItemAt(i).getUri(), "")); else if (data.getData() != null) entries.add(entry(data.getData(), "")); importEntries(entries, "合辑", "", null); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("导入失败：" + e.getMessage()); } }); }
+        else if (request == TXT) { startImportProgress(); io.execute(() -> { try { List<Entry> entries = new ArrayList<>(); if (data.getClipData() != null) for (int i = 0; i < data.getClipData().getItemCount(); i++) {checkImportCanceled();entries.add(entry(data.getClipData().getItemAt(i).getUri(), ""));} else if (data.getData() != null) entries.add(entry(data.getData(), "")); importEntries(entries, "合辑", "", null); } catch (Exception e) { runOnUiThread(()->{backgroundImport=false;if(importProgressDialog!=null)importProgressDialog.dismiss();}); toast("导入失败：" + e.getMessage()); } }); }
         else if (request == FONT && data.getData() != null) { showBusy("正在加载字体…"); io.execute(() -> { try { byte[] bytes = read(getContentResolver().openInputStream(data.getData()), 40_000_000); File temp = new File(getCacheDir(), "font-check"); atomic(temp, bytes); Typeface.createFromFile(temp); atomic(new File(getFilesDir(), "reader-font"), bytes); temp.delete(); runOnUiThread(() -> { hideBusy(); set(lib.prefs(), "font", "自选字体"); if (current != null) buildReader(current.optInt("position")); persist(); toast("字体已应用"); }); } catch (Exception e) { runOnUiThread(this::hideBusy); toast("字体无效，请选择 TTF / OTF 文件"); } }); }
     }
     @Override public void onBackPressed() { if (current != null && pagedReader != null && pagedReader.selectionActive()) pagedReader.clearSelection(); else if (current != null) back(); else if (selectionMode) { selectionMode = false; selectedBooks.clear(); renderCards(shelfMatches); } else { persist(); moveTaskToBack(true); } }
@@ -1408,7 +1518,7 @@ public final class NativeActivity extends Activity {
         }
         return super.dispatchKeyEvent(event);
     }
-    @Override public void onConfigurationChanged(android.content.res.Configuration config) { super.onConfigurationChanged(config); if (current != null) { capture(); buildReader(current.optInt("position")); } else showShelf(); }
+    @Override public void onConfigurationChanged(android.content.res.Configuration config) { super.onConfigurationChanged(config); if(lib==null)return;if (current != null) { capture(); buildReader(current.optInt("position")); } else showShelf(); }
     @Override protected void onPause() { super.onPause(); if (lib != null) { capture(); persist(); handler.removeCallbacks(exportTask); exportTask.run(); } }
     @Override public void onWindowFocusChanged(boolean focus) { super.onWindowFocusChanged(focus); if (focus && root != null) systemBars(current == null || controlsVisible); }
     @Override protected void onResume() {
@@ -1421,5 +1531,10 @@ public final class NativeActivity extends Activity {
         updateDeviceStatus();
     }
     @Override protected void onStop() { finishSeek(false); handler.removeCallbacks(aboutTask); titleTapAt = 0; if (statusRegistered) { unregisterReceiver(statusReceiver); statusRegistered = false; } super.onStop(); }
-    @Override protected void onDestroy() { paginationGeneration++; if (statusRegistered) unregisterReceiver(statusReceiver); handler.removeCallbacksAndMessages(null); io.shutdownNow(); openIo.shutdownNow(); pageIo.shutdownNow(); coverIo.shutdownNow(); saveIo.shutdown(); super.onDestroy(); }
+    @Override protected void onDestroy() {
+        final Library closing=lib;final String settings=closing==null?null:closing.snapshot();destroyed=true;cancelCurrentImport();paginationGeneration++;shelfGeneration++;
+        if(statusRegistered)unregisterReceiver(statusReceiver);handler.removeCallbacksAndMessages(null);for(Dialog d:new ArrayList<>(dialogShells.keySet()))d.dismiss();dialogShells.clear();if(busyDialog!=null)busyDialog.dismiss();if(drawer!=null)drawer.dismiss();
+        io.shutdownNow();openIo.shutdownNow();pageIo.shutdownNow();coverIo.shutdownNow();queryIo.shutdownNow();
+        saveIo.execute(()->{try{long deadline=SystemClock.elapsedRealtime()+30000;for(ExecutorService worker:new ExecutorService[]{io,openIo,pageIo,coverIo,queryIo})worker.awaitTermination(Math.max(0,deadline-SystemClock.elapsedRealtime()),TimeUnit.MILLISECONDS);if(closing!=null)closing.saveSnapshot(settings);}catch(Exception ignored){}finally{if(closing!=null)try{closing.store.close();}catch(RuntimeException ignored){}}});saveIo.shutdown();super.onDestroy();
+    }
 }

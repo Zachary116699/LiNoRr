@@ -1,4 +1,5 @@
 package com.lnreader.app;
+import java.io.*;
 import java.nio.*;
 import java.nio.charset.*;
 import java.util.*;
@@ -70,6 +71,15 @@ public final class BookParser {
             catch (CharacterCodingException e) { value = Charset.forName("GB18030").newDecoder().onMalformedInput(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString(); } }
         return value.replaceFirst("^\\uFEFF", "").replace("\r\n", "\n").replace('\r', '\n');
     }
+    static String read(File file,int limit) throws IOException {
+        byte[] prefix=new byte[2];int n;try(InputStream in=new FileInputStream(file)){n=in.read(prefix);}
+        Charset charset=n==2&&(prefix[0]&255)==255&&(prefix[1]&255)==254?StandardCharsets.UTF_16LE:n==2&&(prefix[0]&255)==254&&(prefix[1]&255)==255?StandardCharsets.UTF_16BE:StandardCharsets.UTF_8;
+        try{return read(file,charset,limit);}catch(CharacterCodingException e){if(charset!=StandardCharsets.UTF_8)throw e;return read(file,Charset.forName("GB18030"),limit);}
+    }
+    private static String read(File file,Charset charset,int limit) throws IOException {
+        StringBuilder text=new StringBuilder();boolean cr=false,first=true;char[] buffer=new char[8192];
+        try(Reader input=new InputStreamReader(new FileInputStream(file),charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT))){int n;while((n=input.read(buffer))!=-1){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("正文加载已取消");for(int i=0;i<n;i++){char c=buffer[i];if(first){first=false;if(c=='\uFEFF')continue;}if(c=='\n'&&cr){cr=false;continue;}cr=c=='\r';if(text.length()>=limit)throw new IOException("正文超过当前设备的安全内存上限");text.append(cr?'\n':c);}}}return text.toString();
+    }
     public static List<Chapter> parse(String text) { return parse(text, Rules.defaults()); }
     public static List<Chapter> parse(String text, Rules rules) {
         List<Chapter> headings = new ArrayList<>();
@@ -79,7 +89,7 @@ public final class BookParser {
             while (right > left && Character.isWhitespace(text.charAt(right - 1))) right--;
             if (right > left && right - left <= 90 && (!rules.custom.isEmpty() || rules.numberedCandidate(text.charAt(left)) || "第卷部篇章节節目话話回集幕场場折序楔引尾终終结結后後番vVbBpPcCeEsSaA#【[=(—-*".indexOf(text.charAt(left)) >= 0)) {
                 String original = text.substring(left, right), clean = DECOR.matcher(original).replaceAll(""); int level = rules.numberedLevel(original); if (level < 0) level = rules.level(clean);
-                if (level >= 0) headings.add(new Chapter(original, cursor, level));
+                if (level >= 0) {if(headings.size()>=Math.max(4096,Math.min(100000,Runtime.getRuntime().maxMemory()/8192)))throw new IllegalArgumentException("识别到的目录过多，请在章节匹配设置中缩小匹配范围");headings.add(new Chapter(original, cursor, level));}
             }
             cursor = end + 1;
         }
@@ -101,7 +111,7 @@ public final class BookParser {
         int i = 0, j = 0;
         while (i < a.length() && j < b.length()) { char x = a.charAt(i), y = b.charAt(j);
             if (Character.isDigit(x) && Character.isDigit(y)) { int s = i, t = j; while (i < a.length() && Character.isDigit(a.charAt(i))) i++; while (j < b.length() && Character.isDigit(b.charAt(j))) j++;
-                String n = a.substring(s, i).replaceFirst("^0+(?!$)", ""), m = b.substring(t, j).replaceFirst("^0+(?!$)", ""); int c = Integer.compare(n.length(), m.length()); if (c == 0) c = n.compareTo(m); if (c != 0) return c;
+                while(s+1<i&&a.charAt(s)=='0')s++;while(t+1<j&&b.charAt(t)=='0')t++;int c=Integer.compare(i-s,j-t);if(c==0)for(int p=0;p<i-s;p++){c=Character.compare(a.charAt(s+p),b.charAt(t+p));if(c!=0)break;}if(c!=0)return c;
             } else { int c = Character.compare(Character.toLowerCase(x), Character.toLowerCase(y)); if (c != 0) return c; i++; j++; } }
         return Integer.compare(a.length() - i, b.length() - j);
     }

@@ -106,7 +106,7 @@ public class GestureChecks extends Instrumentation {
             Thread.sleep(500); Library library = (Library) get(activity, "lib");
             String content = "第一章 起点\n" + "正文在这一行，检查平移时相邻页面的位置和取消后的阅读进度。\n".repeat(160) + "第二章 下一章\n章节边界后的正文。\n";
             String id = "eeeeeeeeeeeeeeeeeeeeeeee"; fixture = new File(library.root, id + ".txt"); BackupFiles.write(fixture, content.getBytes(StandardCharsets.UTF_8));
-            JSONObject book = json("id", id, "title", "Gesture QA", "position", 0, "shelf", "default", "marks", new JSONArray());
+            library.books.add(json("id",id,"title","Gesture QA","position",0,"shelf","default","marks",new JSONArray()));JSONObject book=library.book(id);
             runOnMainSync(() -> { set(library.prefs(), "readingMode", "paged"); set(library.prefs(), "pageAnimation", "slide"); call(activity, "openBook", new Class<?>[]{JSONObject.class, int.class}, book, 0); });
             for (int i = 0; i < 200 && get(activity, "pageTotals") == null; i++) Thread.sleep(50);
             Thread.sleep(400); progressChecks(activity, book); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, 0)); final int original = book.optInt("position");

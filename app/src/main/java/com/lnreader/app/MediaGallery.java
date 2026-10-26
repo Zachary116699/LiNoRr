@@ -21,7 +21,7 @@ final class MediaGallery extends LinearLayout implements AutoCloseable {
         Photo(long id, String name, String bucket, String album) { this.id = id; this.name = name; this.bucket = bucket; this.album = album; }
         Uri uri() { return ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id); }
     }
-    private final ExecutorService worker = Executors.newFixedThreadPool(2);
+    private final ExecutorService worker = new ThreadPoolExecutor(2,2,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(24),new ThreadPoolExecutor.DiscardOldestPolicy());
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final LruCache<Long, Bitmap> thumbnails = new LruCache<Long, Bitmap>(4 * 1024 * 1024) {
         @Override protected int sizeOf(Long key, Bitmap value) { return value.getAllocationByteCount(); }

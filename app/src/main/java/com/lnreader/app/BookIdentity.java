@@ -6,14 +6,20 @@ import java.util.*;
 
 /** File names and paths never affect identity or generated cover colors. */
 final class BookIdentity {
+    static String fingerprint(byte[] bytes) throws Exception {
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");long length=bytes.length;
+        for(int shift=56;shift>=0;shift-=8)digest.update((byte)(length>>>shift));digest.update(bytes);
+        return hex(digest.digest());
+    }
     static String fingerprint(List<File> files) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256"); byte[] buffer = new byte[32768];
         for (File file : files) {
             long length = file.length(); for (int shift = 56; shift >= 0; shift -= 8) digest.update((byte) (length >>> shift));
-            try (InputStream input = new FileInputStream(file)) { int n; while ((n = input.read(buffer)) >= 0) digest.update(buffer, 0, n); }
+            try (InputStream input = new FileInputStream(file)) { int n; while ((n = input.read(buffer)) >= 0) {if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("指纹任务已取消");digest.update(buffer, 0, n);} }
         }
-        StringBuilder result = new StringBuilder(); for (byte value : digest.digest()) result.append(String.format(Locale.ROOT, "%02x", value & 255)); return result.toString();
+        return hex(digest.digest());
     }
+    static String hex(byte[] bytes){char[] out=new char[bytes.length*2],digits="0123456789abcdef".toCharArray();for(int i=0;i<bytes.length;i++){out[i*2]=digits[(bytes[i]&255)>>>4];out[i*2+1]=digits[bytes[i]&15];}return new String(out);}
     static int coverColor(String hash) {
         // Low saturation is what makes a light color quiet; an RGB floor alone
         // still permits harsh pinks/yellows. Keep L=.81..87 and S=.16..24.
