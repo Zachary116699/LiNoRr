@@ -13,6 +13,7 @@ final class ShelfReorder implements View.OnDragListener {
     interface Model {
         int indexOf(Object item);
         int count();
+        default int firstMovable() { return 2; }
         void move(Object item, int target);
         int background();
     }
@@ -36,7 +37,7 @@ final class ShelfReorder implements View.OnDragListener {
         shifts.put(row, shift(index));
     }
     boolean start(View handle, View line, Object item) {
-        if (moving != null || model.indexOf(item) < 2) return false;
+        if (moving != null || model.indexOf(item) < model.firstMovable()) return false;
         moving = item; from = target = model.indexOf(item); height = line.getHeight(); dropped = false; shifts.clear();
         preview = new View(line.getContext()) {
             @Override protected void onDraw(Canvas canvas) { canvas.drawColor(model.background()); line.draw(canvas); }
@@ -83,8 +84,8 @@ final class ShelfReorder implements View.OnDragListener {
                 // Hit the original slots, not the animated rows passing underneath the finger.
                 int index = ListView.INVALID_POSITION;
                 for (int i = 0; i < list.getChildCount(); i++) { View row = list.getChildAt(i); if (event.getY() >= row.getTop() && event.getY() < row.getBottom()) { index = list.getFirstVisiblePosition() + i; break; } }
-                if (index == ListView.INVALID_POSITION) index = event.getY() < 0 ? 2 : model.count() - 1;
-                target = Math.max(2, Math.min(model.count() - 1, index)); animateGap();
+                if (index == ListView.INVALID_POSITION) index = event.getY() < 0 ? model.firstMovable() : model.count() - 1;
+                target = Math.max(model.firstMovable(), Math.min(model.count() - 1, index)); animateGap();
                 float density = list.getResources().getDisplayMetrics().density;
                 if (event.getY() < 48 * density) list.smoothScrollBy(-(int) (24 * density), 80);
                 else if (event.getY() > list.getHeight() - 48 * density) list.smoothScrollBy((int) (24 * density), 80);

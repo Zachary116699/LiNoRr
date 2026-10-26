@@ -36,7 +36,7 @@ final class Library {
         state = metadata.exists() ? new JSONObject(new String(read(new AtomicFile(metadata).openRead(), 32_000_000), StandardCharsets.UTF_8)) : json();
         JSONArray bs = state.optJSONArray("books"), ss = state.optJSONArray("shelves");
         if (bs != null) for (int i = 0; i < bs.length(); i++) if (bs.optJSONObject(i) != null) books.add(bs.optJSONObject(i));
-        for (JSONObject b : books) if (b.optJSONArray("parts") == null || b.optString("directory").isEmpty()) portableReady = false;
+        for (JSONObject b : books) { set(b, "private", b.optBoolean("private", false)); if (b.optJSONArray("parts") == null || b.optString("directory").isEmpty()) portableReady = false; }
         if (ss != null) for (int i = 0; i < ss.length(); i++) if (ss.optJSONObject(i) != null) shelves.add(ss.optJSONObject(i));
         if (shelves.isEmpty()) shelves.add(json("id", "default", "name", "未分类"));
         if (state.optJSONObject("prefs") == null) set(state, "prefs", defaultPrefs());

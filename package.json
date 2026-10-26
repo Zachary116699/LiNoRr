@@ -11,7 +11,8 @@
     "test:storage": "node tests/storage-android.mjs",
     "test:polish": "node tests/polish-android.mjs",
     "test:media": "node tests/media-android.mjs",
-    "test:interaction": "node tests/interaction-android.mjs"
+    "test:interaction": "node tests/interaction-android.mjs",
+    "test:privacy": "node tests/privacy-android.mjs"
   },
   "devDependencies": { "playwright": "1.56.1" }
 }

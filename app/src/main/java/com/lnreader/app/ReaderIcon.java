@@ -22,6 +22,8 @@ final class ReaderIcon extends Drawable {
         paint.setStyle(Paint.Style.STROKE);
         Path p = new Path();
         switch (kind) {
+            case "eye":
+                p.moveTo(2, 12); p.cubicTo(7, 3, 17, 3, 22, 12); p.cubicTo(17, 21, 7, 21, 2, 12); canvas.drawPath(p, paint); canvas.drawCircle(12, 12, 3, paint); break;
             case "check":
                 p.moveTo(4, 12); p.lineTo(9, 18); p.lineTo(21, 5); canvas.drawPath(p, paint); break;
             case "close":

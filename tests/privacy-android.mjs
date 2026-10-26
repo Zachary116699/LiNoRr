@@ -1,0 +1,18 @@
+import {execFileSync} from 'node:child_process';
+import {mkdirSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import assert from 'node:assert/strict';
+const bin=join(process.env.ANDROID_HOME,'platform-tools/adb');
+const serial=execFileSync(bin,['devices']).toString().match(/emulator-\d+/)?.[0];assert.ok(serial);
+const adb=(...args)=>execFileSync(bin,['-s',serial,...args],{timeout:90000,maxBuffer:16e6});
+assert.match(adb('emu','avd','name').toString(),/^LNReader_QA/,'Use a dedicated QA emulator; no physical devices.');
+adb('shell','am','force-stop','com.lnreader.app');adb('shell','pm','clear','com.lnreader.app');
+adb('shell','appops','set','--uid','com.lnreader.app','MANAGE_EXTERNAL_STORAGE','allow');
+const result=adb('shell','am','instrument','-w','-e','guard','LNReader_QA','-e','gesture','true','-e','privacy','true','com.lnreader.app.test/com.lnreader.app.StorageChecks').toString();
+assert.match(result,/PASS: privacy visibility/,result);console.log(result.trim());
+mkdirSync('artifacts',{recursive:true});for(const name of ['privacy-shelf','privacy-night','ordinary-shelf'])writeFileSync('artifacts/android-0.9.16-'+name+'.png',adb('exec-out','run-as','com.lnreader.app','cat','cache/'+name+'.png'));
+adb('shell','am','force-stop','com.lnreader.app');adb('shell','am','start','-W','-f','0x10008000','-n','com.lnreader.app/.NativeActivity');
+adb('shell','uiautomator','dump','/sdcard/privacy-cold.xml');const ui=adb('shell','cat','/sdcard/privacy-cold.xml').toString();
+assert.match(ui,/Public QA/);for(const hidden of ['Hidden QA','Private import QA','退出隐私模式','隐私书籍'])assert.ok(!ui.includes(hidden),'Cold launch leaked '+hidden);
+console.log('PASS: process cold launch hides private books and restores ordinary mode');
+adb('shell','am','force-stop','com.lnreader.app');adb('shell','pm','clear','com.lnreader.app');
