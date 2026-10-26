@@ -29,6 +29,8 @@ public final class NativeActivity extends Activity {
     private LinearLayout readerHeader, readerFooter;
     private LinearLayout quietHeader, quietFooter;
     private TextView quietTitle, quietProgress, deviceStatus;
+    private ImageButton bookmarkButton;
+    private boolean bookmarkFilled;
     private int battery = -1;
     private int readerBottomInset;
     private boolean statusRegistered;
@@ -270,6 +272,7 @@ public final class NativeActivity extends Activity {
         JSONObject view = views.optJSONObject(active); if (view == null) { view = new JSONObject(); set(views, active, view); } return view;
     }
     private void updateShelfTools() { if (shelfTools != null) shelfTools.setVisibility(toolsExpanded ? View.VISIBLE : View.GONE); }
+    private void collapseShelfTools() { toolsExpanded = false; selectionMode = false; selectedBooks.clear(); }
     private void sortDialog() {
         LinearLayout body = column(); JSONObject view = active.equals("recent") ? recentSortView : shelfView(); Dialog dialog = sheet("书籍排序", body);
         body.addView(text("排序信息", 16, uiMuted())); RadioGroup fields = new RadioGroup(this); body.addView(fields);
@@ -387,7 +390,7 @@ public final class NativeActivity extends Activity {
             }
         });
         choices.setAdapter(adapter);
-        choices.setOnItemClickListener((parent, view, p, id) -> { if (editing[0]) return; active = entries.get(p).optString("id"); shelfPage = 0; drawer.dismiss(); persist(); showShelf(); });
+        choices.setOnItemClickListener((parent, view, p, id) -> { if (editing[0]) return; collapseShelfTools(); active = entries.get(p).optString("id"); shelfPage = 0; drawer.dismiss(); persist(); showShelf(); });
         choices.setOnItemLongClickListener((parent, view, p, id) -> { JSONObject shelf = entries.get(p); if (!isBuiltinShelf(shelf.optString("id"))) { editing[0] = true; choices.setItemsCanFocus(true); choices.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS); editToggle[0].setText("完成编辑"); renaming[0] = shelf; draft[0] = shelf.optString("name"); focusRename[0] = true; adapter.notifyDataSetChanged(); return true; } return false; });
         shell.addView(choices, new LinearLayout.LayoutParams(-1, 0, 1)); shell.addView(button("新增书架", true, () -> { drawer.dismiss(); shelfEditor(null); }));
         Button edit = softButton("编辑书架", () -> {}); editToggle[0] = edit; edit.setOnClickListener(v -> { cancelRename[0].run(); editing[0] = !editing[0]; edit.setText(editing[0] ? "完成编辑" : "编辑书架"); adapter.notifyDataSetChanged(); }); shell.addView(edit);
@@ -554,7 +557,7 @@ public final class NativeActivity extends Activity {
         if (view instanceof ImageView && ((ImageView) view).getDrawable() instanceof ReaderIcon) ((ReaderIcon) ((ImageView) view).getDrawable()).color("search-clear".equals(view.getTag()) ? view.isEnabled() ? dangerInk() : blend(uiBg(), uiInk(), .25f) : uiInk());
         if (view instanceof TextView) {
             TextView text = (TextView) view; Object tag = view.getTag();
-            text.setTextColor("danger".equals(tag) || text instanceof Button && destructive(text.getText().toString()) ? dangerInk() : "primary".equals(tag) ? Color.WHITE : uiInk()); text.setHintTextColor(uiMuted());
+            text.setTextColor("danger".equals(tag) || text instanceof Button && destructive(text.getText().toString()) ? dangerInk() : "primary".equals(tag) ? Color.WHITE : "info-label".equals(tag) ? uiMuted() : uiInk()); text.setHintTextColor(uiMuted());
             if (text instanceof android.widget.CompoundButton) ((CompoundButton) text).setButtonTintList(android.content.res.ColorStateList.valueOf(uiAccent()));
         }
         if (view instanceof Spinner) ((Spinner) view).setPopupBackgroundDrawable(shape(uiBg(), 8));
@@ -611,29 +614,31 @@ public final class NativeActivity extends Activity {
     private void shelfEditor(JSONObject shelf) {
         LinearLayout body = column(); EditText name = input("书架名称", shelf == null ? "" : shelf.optString("name")); name.setContentDescription("书架名称"); settingRow(body, "名称", name); gap(body, 20);
         Dialog dialog = sheet(shelf == null ? "新建书架" : "管理书架", body);
-        body.addView(button("保存书架", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty() || value.length() > 20) { toast("书架名称请输入 1～20 字"); return; } for (JSONObject s : lib.shelves) if (s != shelf && s.optString("name").equals(value)) { toast("书架名称已经存在"); return; } if (shelf == null) { JSONObject s = json("id", UUID.randomUUID().toString(), "name", value); lib.shelves.add(s); active = s.optString("id"); } else set(shelf, "name", value); dialog.dismiss(); organizeAndRefresh(); }));
+        body.addView(button("保存书架", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty() || value.length() > 20) { toast("书架名称请输入 1～20 字"); return; } for (JSONObject s : lib.shelves) if (s != shelf && s.optString("name").equals(value)) { toast("书架名称已经存在"); return; } if (shelf == null) { JSONObject s = json("id", UUID.randomUUID().toString(), "name", value); lib.shelves.add(s); collapseShelfTools(); active = s.optString("id"); } else set(shelf, "name", value); dialog.dismiss(); organizeAndRefresh(); }));
         if (shelf != null) body.addView(button("删除书架", false, () -> { dialog.dismiss(); deleteShelf(shelf); }));
     }
     private void bookEditor(JSONObject book) {
         if (!bookVisible(book)) return;
-        LinearLayout body = column(); LinearLayout cover = row(); cover.setGravity(Gravity.CENTER); cover.addView(bookCover(book, 100, 140)); body.addView(cover); gap(body, 4);
+        LinearLayout body = column(); LinearLayout cover = row(); cover.setGravity(Gravity.CENTER); cover.addView(bookCover(book, 88, 123)); body.addView(cover); gap(body, 6);
         Dialog[] editor = {null}; LinearLayout coverActions = row();
-        weighted(coverActions, button("导入封面", false, () -> { editor[0].dismiss(); ensureStorage(() -> chooseCover(book)); }));
-        Button removeCover = button("删除封面", false, () -> ensureStorage(() -> { editor[0].dismiss(); deleteCover(book); })); removeCover.setEnabled(book.optBoolean("cover") || lib.coverFile(book).isFile()); weighted(coverActions, removeCover); body.addView(coverActions); gap(body, 8);
-        infoRow(body, "文件名称", Library.fileNames(book)); infoRow(body, "文件大小", android.text.format.Formatter.formatShortFileSize(this, lib.fileSize(book)));
-        infoRow(body, "导入日期", book.optLong("added") > 0 ? android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", new Date(book.optLong("added"))).toString() : "—");
-        infoRow(body, "页码数量", book.optInt("lastPageCount") > 0 ? book.optInt("lastPage", 1) + "/" + book.optInt("lastPageCount") : "—/—"); infoRow(body, "阅读进度", percent(book) + "%");
+        Button importCover = softButton("导入封面", () -> { editor[0].dismiss(); ensureStorage(() -> chooseCover(book)); }); importCover.setMinHeight(dp(36)); importCover.setMinimumHeight(dp(36)); weighted(coverActions, importCover); coverActions.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
+        Button removeCover = softButton("删除封面", () -> ensureStorage(() -> { editor[0].dismiss(); deleteCover(book); })); removeCover.setMinHeight(dp(36)); removeCover.setMinimumHeight(dp(36)); removeCover.setEnabled(book.optBoolean("cover") || lib.coverFile(book).isFile()); weighted(coverActions, removeCover); body.addView(coverActions); gap(body, 12);
+        LinearLayout metadata = column(); outlinePanel(metadata); metadata.setContentDescription("书籍信息");
+        infoRow(metadata, "文件名称", Library.fileNames(book)); infoRow(metadata, "文件大小", android.text.format.Formatter.formatShortFileSize(this, lib.fileSize(book)));
+        infoRow(metadata, "导入日期", book.optLong("added") > 0 ? android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", new Date(book.optLong("added"))).toString() : "—");
+        infoRow(metadata, "页码数量", book.optInt("lastPageCount") > 0 ? book.optInt("lastPage", 1) + "/" + book.optInt("lastPageCount") : "—/—"); infoRow(metadata, "阅读进度", percent(book) + "%"); body.addView(metadata); gap(body, 10);
         EditText name = input("书籍名称", book.optString("title")); name.setContentDescription("书籍名称"); name.setSelectAllOnFocus(true); settingRow(body, "书籍名称", name);
         LinkedHashSet<String> memberships = new LinkedHashSet<>(Library.shelfIds(book)); body.addView(bookCategories(memberships)); gap(body, 8);
         Dialog dialog = sheet("书籍管理", body); editor[0] = dialog;
-        body.addView(button("章节匹配设置", false, () -> { dialog.dismiss(); chapterSettings(book); })); gap(body, 4);
-        if (privacyMode) body.addView(button(book.optBoolean("private") ? "移出隐私" : "添加到隐私", false, () -> { dialog.dismiss(); changePrivacy(Collections.singleton(book.optString("id")), !book.optBoolean("private")); }));
-        body.addView(button("保存", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty()) return; set(book, "title", value.substring(0, Math.min(value.length(), 120))); Library.setShelfIds(book, memberships); dialog.dismiss(); organizeAndRefresh(); }));
-        body.addView(button("从书架移除", false, () -> { dialog.dismiss(); confirmRemove(Collections.singleton(book.optString("id"))); }));
+        removeCover.setAlpha(removeCover.isEnabled() ? 1 : .4f);
+        LinearLayout options = row(); weighted(options, softButton("章节匹配设置", () -> { dialog.dismiss(); chapterSettings(book); }));
+        if (privacyMode) { options.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1)); weighted(options, softButton(book.optBoolean("private") ? "移出隐私" : "添加到隐私", () -> { dialog.dismiss(); changePrivacy(Collections.singleton(book.optString("id")), !book.optBoolean("private")); })); } body.addView(options); gap(body, 14);
+        LinearLayout actions = row(); weighted(actions, button("从书架移除", false, () -> { dialog.dismiss(); confirmRemove(Collections.singleton(book.optString("id"))); })); actions.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
+        weighted(actions, button("保存", true, () -> { String value = name.getText().toString().trim(); if (value.isEmpty()) return; set(book, "title", value.substring(0, Math.min(value.length(), 120))); Library.setShelfIds(book, memberships); dialog.dismiss(); organizeAndRefresh(); })); body.addView(actions);
     }
     private void infoRow(LinearLayout body, String label, String value) {
         LinearLayout line = row(); line.setMinimumHeight(dp(28)); padding(line, 0, 2);
-        line.addView(text(label, 14, uiMuted()), new LinearLayout.LayoutParams(dp(76), -2));
+        TextView caption = text(label, 13, uiMuted()); caption.setTag("info-label"); line.addView(caption, new LinearLayout.LayoutParams(dp(76), -2));
         TextView text = text(value.isEmpty() ? "—" : value, 14, uiMuted()); text.setGravity(Gravity.END); text.setTextIsSelectable(true); weighted(line, text); body.addView(line);
     }
     private boolean allPhotosAllowed() { return Build.VERSION.SDK_INT >= 30 && Environment.isExternalStorageManager() || checkSelfPermission(Build.VERSION.SDK_INT >= 33 ? android.Manifest.permission.READ_MEDIA_IMAGES : android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED; }
@@ -871,7 +876,7 @@ public final class NativeActivity extends Activity {
         readerHeader = row(); readerHeader.setBackgroundColor(readerBg()); padding(readerHeader, 6, 6); readerHeader.addView(readerIconButton("back", "返回书架", this::back), new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout titles = column(); TextView title = text(current.optString("title"), 16, readerInk()); title.setMaxLines(1); title.setEllipsize(TextUtils.TruncateAt.END); titles.addView(title);
         chapterLabel = text("", 15, MUTED); chapterLabel.setMaxLines(1); chapterLabel.setEllipsize(TextUtils.TruncateAt.END); titles.addView(chapterLabel); weighted(readerHeader, titles);
-        readerHeader.addView(readerIconButton("bookmark", "书签", this::marks), new LinearLayout.LayoutParams(dp(48), dp(48))); surface.addView(readerHeader, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        bookmarkFilled = false; bookmarkButton = readerIconButton("bookmark", "书签", this::marks); readerHeader.addView(bookmarkButton, new LinearLayout.LayoutParams(dp(48), dp(48))); surface.addView(readerHeader, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
         readerFooter = column(); readerFooter.setBackgroundColor(readerBg()); padding(readerFooter, 16, 8); progressLabel = text("", 14, MUTED); readerFooter.addView(progressLabel);
         LinearLayout navigation = row(); navigation.addView(readerButton("上一章", () -> chapterStep(-1)));
         progress = new ThumbSeekBar(this); progress.setMax(1000); progress.setContentDescription("阅读进度"); weighted(navigation, progress);
@@ -1072,6 +1077,7 @@ public final class NativeActivity extends Activity {
     }
     private void positionUI() {
         if (progressLabel == null || current == null) return;
+        updateBookmarkIcon();
         if (!((ThumbSeekBar) progress).isTouchTracking()) progress.setProgress((int) (1000L * current.optInt("position") / Math.max(1, source.length())));
         if (quietProgress != null) {
             int page = pageNumber, count = pageCount;
@@ -1086,7 +1092,7 @@ public final class NativeActivity extends Activity {
             if (pageTotals != null) { set(current, "lastPage", pageTotals[chapter] + Math.min(page, pageTotals[chapter + 1] - pageTotals[chapter])); set(current, "lastPageCount", pageTotals[pageTotals.length - 1]); }
         }
     }
-    private void back() { finishSeek(false); capture(); persist(); if (progressTask != null) handler.removeCallbacks(progressTask); showShelf(); }
+    private void back() { finishSeek(false); capture(); persist(); if (progressTask != null) handler.removeCallbacks(progressTask); collapseShelfTools(); showShelf(); }
     private void catalog() {
         if (toc.isEmpty()) { LinearLayout empty = column(); empty.addView(text("未识别到章节", 16, uiMuted())); Dialog d = sheet("目录", empty); sheetAction(d, "settings", "章节匹配设置", () -> { d.dismiss(); chapterSettings(current); }); empty.addView(button("返回阅读", false, d::dismiss)); return; }
         List<BookParser.Chapter> chapters = toc;
@@ -1139,7 +1145,19 @@ public final class NativeActivity extends Activity {
         body.addView(button("返回阅读", false, d::dismiss));
     }
     private JSONArray bookmarks() { JSONArray marks = current.optJSONArray("marks"); if (marks == null) { marks = new JSONArray(); set(current, "marks", marks); } return marks; }
-    private void addMark() { capture(); JSONArray marks = bookmarks(); for (int i = 0; i < marks.length(); i++) if (Math.abs(marks.optJSONObject(i).optInt("offset") - current.optInt("position")) < 80) { toast("这个位置已经有书签"); return; } String title = chapters.get(chapter).title; marks.put(json("offset", current.optInt("position"), "title", title.isEmpty() ? current.optString("title") : title, "date", System.currentTimeMillis())); persist(); toast("已添加书签"); }
+    private void updateBookmarkIcon() {
+        if (current == null || bookmarkButton == null || display == null) return;
+        int start = current.optInt("position"), end = start + 1;
+        if (isPagedMode() && pagedReader != null && pagedReader.ready()) { start = display.sourceOffset(pagedReader.offset()); end = display.sourceOffset(pagedReader.visibleEnd()); }
+        else if (readingText != null && readingText.getLayout() != null && readingScroll != null) {
+            android.text.Layout layout = readingText.getLayout(); int top = Math.max(0, readingScroll.getScrollY() - readingText.getTop());
+            start = display.sourceOffset(layout.getLineStart(layout.getLineForVertical(top))); end = display.sourceOffset(layout.getLineEnd(layout.getLineForVertical(top + readingScroll.getHeight() - 1)));
+        }
+        boolean filled = false; JSONArray marks = current.optJSONArray("marks");
+        if (marks != null) for (int i = 0; i < marks.length(); i++) { JSONObject mark = marks.optJSONObject(i); if (mark != null && mark.optInt("offset", -1) >= start && mark.optInt("offset", -1) < end) { filled = true; break; } }
+        if (bookmarkFilled != filled) { bookmarkFilled = filled; bookmarkButton.setSelected(filled); bookmarkButton.setImageDrawable(new ReaderIcon(filled ? "bookmark_filled" : "bookmark", readerInk(), getResources().getDisplayMetrics().density)); }
+    }
+    private void addMark() { capture(); JSONArray marks = bookmarks(); for (int i = 0; i < marks.length(); i++) if (Math.abs(marks.optJSONObject(i).optInt("offset") - current.optInt("position")) < 80) { toast("这个位置已经有书签"); return; } String title = chapters.get(chapter).title; marks.put(json("offset", current.optInt("position"), "title", title.isEmpty() ? current.optString("title") : title, "date", System.currentTimeMillis())); updateBookmarkIcon(); persist(); toast("已添加书签"); }
     private void marks() {
         capture(); LinearLayout body = column(); Dialog d = sheet("我的书签", body); LinearLayout entries = column();
         body.addView(button("添加当前位置书签", false, () -> { addMark(); renderMarks(entries, d); })); body.addView(entries); renderMarks(entries, d);
@@ -1147,7 +1165,7 @@ public final class NativeActivity extends Activity {
     private void renderMarks(LinearLayout body, Dialog dialog) {
         body.removeAllViews(); JSONArray marks = bookmarks();
         if (marks.length() == 0) body.addView(text("还没有书签", 15, MUTED));
-        for (int i = 0; i < marks.length(); i++) { int index = i; JSONObject mark = marks.optJSONObject(i); LinearLayout r = row(); weighted(r, button(mark.optString("title") + " · " + (int) (100L * mark.optInt("offset") / Math.max(1, source.length())) + "%", false, () -> { jump(mark.optInt("offset")); persist(); dialog.dismiss(); })); Button remove = button("×", false, () -> { marks.remove(index); persist(); renderMarks(body, dialog); }); remove.setContentDescription("删除书签" + mark.optString("title")); r.addView(remove); body.addView(r); }
+        for (int i = 0; i < marks.length(); i++) { int index = i; JSONObject mark = marks.optJSONObject(i); LinearLayout r = row(); weighted(r, button(mark.optString("title") + " · " + (int) (100L * mark.optInt("offset") / Math.max(1, source.length())) + "%", false, () -> { jump(mark.optInt("offset")); persist(); dialog.dismiss(); })); Button remove = button("×", false, () -> { marks.remove(index); updateBookmarkIcon(); persist(); renderMarks(body, dialog); }); remove.setContentDescription("删除书签" + mark.optString("title")); r.addView(remove); body.addView(r); }
     }
     private void settings() {
         capture(); LinearLayout body = column(); Dialog d = sheet("阅读设置", body); d.setOnDismissListener(dialog -> body.clearFocus());

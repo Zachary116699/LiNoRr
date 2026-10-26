@@ -41,6 +41,10 @@ final class PrivacyChecks {
         check(cover.getChildAt(1).getWidth() == w && cover.getChildAt(1).getHeight() == h, "Outline changed the image size");
         check(bitmap.getPixel(0, h / 2) != bitmap.getPixel(w / 2, h / 2), "Cover edge is indistinguishable from its fill"); bitmap.recycle();
     }
+    private static void manager(Instrumentation t, NativeActivity a, JSONObject book, String screenshot) throws Exception {
+        t.runOnMainSync(() -> { call(a, "bookEditor", new Class<?>[]{JSONObject.class}, book); View root = shown(a).getWindow().getDecorView(); ViewGroup info = (ViewGroup) find(root, "书籍信息"); check(info != null && info.getChildCount() == 5 && info.getBackground() != null, "Five metadata rows are not grouped in a card"); check(find(root, "保存").getParent() == find(root, "从书架移除").getParent(), "Primary and destructive actions are not grouped"); if ((boolean) get(a, "privacyMode")) check(find(root, book.optBoolean("private") ? "移出隐私" : "添加到隐私").getParent() == find(root, "章节匹配设置").getParent(), "Privacy actions add an extra loose row"); });
+        photo(t, a, screenshot); t.runOnMainSync(() -> shown(a).dismiss());
+    }
     static void run(Instrumentation t, NativeActivity a) throws Exception {
         settle(t, a); check(!(boolean) get(a, "privacyMode"), "Cold launch restored privacy mode");
         Library lib = (Library) get(a, "lib"); check(Environment.isExternalStorageManager(), "QA file permission required");
@@ -56,6 +60,9 @@ final class PrivacyChecks {
         t.runOnMainSync(() -> { coverBorder(find(a.getWindow().getDecorView(), "Public QA封面")); click(a.getWindow().getDecorView(), "切换列表或网格显示");
             View cover = (View) call(a, "bookCover", new Class<?>[]{JSONObject.class, int.class, int.class}, publicBook, 100, 140); cover.measure(View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(420, View.MeasureSpec.EXACTLY)); cover.layout(0, 0, 300, 420); coverBorder(cover);
         }); t.waitForIdleSync();
+        manager(t, a, publicBook, "manager-day");
+        t.runOnMainSync(() -> { set(lib.prefs(), "night", true); call(a, "showShelf", new Class<?>[]{}); }); manager(t, a, publicBook, "manager-night");
+        t.runOnMainSync(() -> { set(lib.prefs(), "night", false); call(a, "showShelf", new Class<?>[]{}); });
         t.runOnMainSync(() -> {
             check(in(a, publicBook, "all") && !in(a, secret, "all") && !in(a, secret, "recent") && !in(a, secret, "mixed"), "Private book visible in ordinary shelves");
             check(((List<?>) get(a, "filteredBooks")).size() == 1, "Ordinary count includes private books");
@@ -66,13 +73,14 @@ final class PrivacyChecks {
             put(a, "query", "Hidden QA"); call(a, "scheduleSearch", new Class<?>[]{});
         }); Thread.sleep(220); t.runOnMainSync(() -> check(((List<?>) get(a, "filteredBooks")).isEmpty(), "Search reveals hidden title"));
         shelf(t, a, "all"); tap(t, find(a.getWindow().getDecorView(), "LiNoRr")); Thread.sleep(ViewConfiguration.getDoubleTapTimeout() + 160);
-        t.runOnMainSync(() -> { Dialog d = shown(a); View root = d.getWindow().getDecorView(); check(find(root, "关于 LiNoRr") != null && find(root, "0.9.18") != null && find(root, "超绝可爱大水笔 & ChatGPT 6.1 Sol") != null && find(root, "应用图标") instanceof ImageView && ((ImageView) find(root, "应用图标")).getDrawable() != null, "About metadata or app icon missing"); });
+        t.runOnMainSync(() -> { Dialog d = shown(a); View root = d.getWindow().getDecorView(); check(find(root, "关于 LiNoRr") != null && find(root, "0.9.19") != null && find(root, "超绝可爱大水笔 & ChatGPT 6.1 Sol") != null && find(root, "应用图标") instanceof ImageView && ((ImageView) find(root, "应用图标")).getDrawable() != null, "About metadata or app icon missing"); });
         photo(t, a, "about"); t.runOnMainSync(() -> shown(a).dismiss());
         doubleTitle(t, a); check((boolean) get(a, "privacyMode"), "Double tap did not enter privacy");
         t.runOnMainSync(() -> { View title = find(a.getWindow().getDecorView(), "LiNoRr"), eye = find(a.getWindow().getDecorView(), "退出隐私模式"), night = find(a.getWindow().getDecorView(), "日夜间模式切换"); check(eye.getLeft() >= title.getRight() && eye.getLeft() - title.getRight() < 8 * a.getResources().getDisplayMetrics().density && night.getLeft() - eye.getRight() > 8 * a.getResources().getDisplayMetrics().density, "Eye is grouped with tools instead of title"); });
         t.runOnMainSync(() -> { check(find(a.getWindow().getDecorView(), "退出隐私模式") != null, "Eye missing"); check((int) call(a, "shelfBg", new Class<?>[]{}) != day, "Privacy palette unchanged"); check(in(a, secret, "all") && in(a, secret, "private") && !in(a, publicBook, "private"), "Private builtin filter incorrect"); call(a, "openDrawer", new Class<?>[]{}); Dialog d = (Dialog) get(a, "drawer"); check(drawerIds(d.getWindow().getDecorView()).containsAll(Arrays.asList("private", "hidden-only")), "Private drawer incomplete"); click(d.getWindow().getDecorView(), "编辑书架"); });
         t.waitForIdleSync(); t.runOnMainSync(() -> { Dialog d = (Dialog) get(a, "drawer"); click(d.getWindow().getDecorView(), "管理隐私：Mixed Shelf"); click(shown(a).getWindow().getDecorView(), "添加到隐私"); check(publicBook.optBoolean("private") && secret.optBoolean("private"), "Shelf privacy action omitted a membership"); call(a, "changePrivacy", new Class<?>[]{Set.class, boolean.class}, Collections.singleton(publicBook.optString("id")), false); });
         shelf(t, a, "private"); photo(t, a, "privacy-shelf");
+        manager(t, a, secret, "manager-private");
         t.runOnMainSync(() -> { call(a, "bookEditor", new Class<?>[]{JSONObject.class}, secret); click(shown(a).getWindow().getDecorView(), "移出隐私"); check(!secret.optBoolean("private"), "Book management did not remove privacy"); });
         shelf(t, a, "all"); t.runOnMainSync(() -> { ((Set<String>) get(a, "selectedBooks")).add(secret.optString("id")); put(a, "selectionMode", true); put(a, "toolsExpanded", true); call(a, "renderCards", new Class<?>[]{Set.class}, (Object) null); click(a.getWindow().getDecorView(), "添加到隐私"); check(secret.optBoolean("private"), "Batch add failed"); ((Set<String>) get(a, "selectedBooks")).add(secret.optString("id")); click(a.getWindow().getDecorView(), "移出隐私"); check(!secret.optBoolean("private"), "Batch remove failed"); call(a, "changePrivacy", new Class<?>[]{Set.class, boolean.class}, Collections.singleton(secret.optString("id")), true); });
         IntentFilter fileFilter = new IntentFilter(Intent.ACTION_OPEN_DOCUMENT); fileFilter.addCategory(Intent.CATEGORY_OPENABLE); fileFilter.addDataType("*/*");
@@ -86,6 +94,7 @@ final class PrivacyChecks {
         JSONObject imported = lib.books.stream().filter(b -> b.optString("title").equals("Private import QA")).findFirst().orElseThrow(); check(imported.optBoolean("private"), "Imported privacy flag missing"); check(lib.partFiles(imported).get(0).isFile(), "Private import did not back up text");
         input.delete(); check(!lib.document(imported).text.isEmpty(), "Deleted original broke private backup");
         t.runOnMainSync(() -> { set(lib.prefs(), "night", true); call(a, "showShelf", new Class<?>[]{}); }); photo(t, a, "privacy-night");
+        manager(t, a, secret, "manager-private-night");
         t.runOnMainSync(() -> { check((int) call(a, "shelfBg", new Class<?>[]{}) == 0xff2d2025, "Private night palette missing"); call(a, "about", new Class<?>[]{}); }); photo(t, a, "about-night");
         t.runOnMainSync(() -> { shown(a).dismiss(); set(lib.prefs(), "night", false); call(a, "showShelf", new Class<?>[]{}); });
         Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); a.startActivity(home); Thread.sleep(250); a.startActivity(new Intent(a, NativeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)); Thread.sleep(350); check((boolean) get(a, "privacyMode") && !a.isFinishing(), "Background return reset privacy");

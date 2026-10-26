@@ -30,6 +30,7 @@ final class InteractionChecks {
     private static void select(Instrumentation t, NativeActivity a, String... ids) { t.runOnMainSync(() -> { Set<String> selected = (Set<String>) get(a, "selectedBooks"); selected.clear(); selected.addAll(Arrays.asList(ids)); put(a, "selectionMode", true); put(a, "toolsExpanded", true); call(a, "updateShelfTools", new Class<?>[]{}); call(a, "renderCards", new Class<?>[]{Set.class}, (Object) null); }); }
     static void run(Instrumentation t, NativeActivity a) throws Exception {
         settle(t, a); Library lib = (Library) get(a, "lib"); check(Environment.isExternalStorageManager(), "QA file permission required");
+        check(!(boolean) get(a, "toolsExpanded"), "Cold launch expanded the search tools");
         File backup = new File(a.getCacheDir(), "interaction-backup"); if (backup.exists()) BackupFiles.deleteTree(backup); lib.backup = backup; lib.portableReady = true;
         JSONObject first = json("id", "qa-first", "name", "QA First"), second = json("id", "qa-second", "name", "QA Second");
         String content = "第一章 开始\n" + "正文测试分类和阅读菜单的操作。\n".repeat(160);
@@ -39,11 +40,20 @@ final class InteractionChecks {
         t.runOnMainSync(() -> { lib.books.clear(); lib.books.add(one); lib.books.add(two); lib.shelves.clear(); lib.shelves.add(json("id", "default", "name", "未分类")); lib.shelves.add(first); lib.shelves.add(second); });
         shelf(t, a, "recent"); select(t, a, one.optString("id"));
         t.runOnMainSync(() -> click(a.getWindow().getDecorView(), "移出书架")); settle(t, a);
+        check((boolean) get(a, "toolsExpanded"), "Batch completion collapsed the search tools");
         check(one.optBoolean("hiddenRecent") && one.optLong("lastRead") == 100 && one.optInt("position") == 8 && lib.directory(one).isDirectory(), "Recent removal lost history or files");
         t.runOnMainSync(() -> ((Runnable) get(a, "exportTask")).run()); ((ExecutorService) get(a, "saveIo")).submit(() -> {}).get(); JSONObject exported = new JSONObject(new String(java.nio.file.Files.readAllBytes(new File(backup, "userdata.json").toPath()), StandardCharsets.UTF_8)); check(exported.getJSONArray("books").getJSONObject(0).optBoolean("hiddenRecent"), "Recent hiding was not persisted");
         t.runOnMainSync(() -> call(a, "openBook", new Class<?>[]{JSONObject.class, int.class}, one, -1)); settle(t, a);
         check(!one.optBoolean("hiddenRecent") && (boolean) call(a, "inShelf", new Class<?>[]{JSONObject.class, String.class}, one, "recent"), "Reading did not restore the recent entry");
         t.runOnMainSync(() -> call(a, "back", new Class<?>[]{}));
+        check(!(boolean) get(a, "toolsExpanded") && !(boolean) get(a, "selectionMode"), "Reader return did not collapse tools and selection");
+        t.runOnMainSync(() -> click(a.getWindow().getDecorView(), "展开或收起筛选排序"));
+        a.startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); Thread.sleep(250);
+        a.startActivity(new Intent(a, NativeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)); Thread.sleep(500);
+        check((boolean) get(a, "toolsExpanded") && a.hasWindowFocus(), "Background return collapsed the search tools");
+        t.runOnMainSync(() -> call(a, "openDrawer", new Class<?>[]{})); t.waitForIdleSync();
+        t.runOnMainSync(() -> { Dialog d = (Dialog) get(a, "drawer"); ListView shelves = (ListView) find(d.getWindow().getDecorView(), "书架分类列表"); for (int i = 0; i < shelves.getAdapter().getCount(); i++) if (((JSONObject) shelves.getAdapter().getItem(i)).optString("id").equals("qa-first")) { shelves.performItemClick(shelves.getChildAt(i - shelves.getFirstVisiblePosition()), i, shelves.getAdapter().getItemId(i)); break; } });
+        check(get(a, "active").equals("qa-first") && !(boolean) get(a, "toolsExpanded"), "Switching shelves did not collapse the search tools");
         shelf(t, a, "qa-first"); select(t, a, one.optString("id"));
         t.runOnMainSync(() -> { View root = a.getWindow().getDecorView(); click(root, "全选当前筛选"); View all = find(root, "全选当前筛选"), cancel = find(root, "取消选择"); check(all.getParent() == cancel.getParent() && ((ViewGroup) all.getParent()).indexOfChild(all) < ((ViewGroup) cancel.getParent()).indexOfChild(cancel), "Select-all is not before Cancel"); View move = find(root, "移出书架"), remove = find(root, "移除所选"); check(move.getLeft() < remove.getLeft(), "Move-out is not before Remove"); }); shot(t, a, "batch-controls");
         t.runOnMainSync(() -> click(a.getWindow().getDecorView(), "移出书架")); settle(t, a);

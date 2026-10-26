@@ -57,6 +57,12 @@ public class GestureChecks extends Instrumentation {
             check(book.optInt("position") == before && bar.getProgress() == oldProgress, "Thumb tap without dragging changed progress: " + mode);
             runOnMainSync(() -> { Bundle args = new Bundle(); args.putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, 250); check(bar.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(), args), "Accessibility seek rejected"); }); Thread.sleep(100);
             check(book.optInt("position") < before && book.optInt("position") > 0, "Accessibility seek did not update reading position: " + mode);
+            runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, 0)); waitForIdleSync(); Thread.sleep(120);
+            runOnMainSync(() -> { check(!((View) get(activity, "bookmarkButton")).isSelected(), "Empty page shows a filled bookmark"); call(activity, "addMark", new Class<?>[]{}); check(((View) get(activity, "bookmarkButton")).isSelected(), "Adding a bookmark did not fill the icon: " + mode); });
+            runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, ((String) get(activity, "source")).indexOf("第二章"))); waitForIdleSync(); Thread.sleep(120);
+            runOnMainSync(() -> check(!((View) get(activity, "bookmarkButton")).isSelected(), "Bookmark from another chapter fills this page: " + mode));
+            runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, 0)); waitForIdleSync(); Thread.sleep(120);
+            runOnMainSync(() -> { check(((View) get(activity, "bookmarkButton")).isSelected(), "Returning to a bookmark did not fill the icon: " + mode); call(activity, "marks", new Class<?>[]{}); for (Dialog d : ((Map<Dialog,?>) get(activity, "dialogShells")).keySet()) if (d.isShowing()) { find(d.getWindow().getDecorView(), "删除书签" + book.optJSONArray("marks").optJSONObject(0).optString("title")).performClick(); d.dismiss(); break; } check(!((View) get(activity, "bookmarkButton")).isSelected(), "Deleting a bookmark left the icon filled: " + mode); });
         }
         runOnMainSync(() -> { set(lib.prefs(), "readingMode", "paged"); call(activity, "buildReader", new Class<?>[]{int.class}, 0); call(activity, "showControls", new Class<?>[]{boolean.class}, false); }); waitForIdleSync(); Thread.sleep(200);
     }

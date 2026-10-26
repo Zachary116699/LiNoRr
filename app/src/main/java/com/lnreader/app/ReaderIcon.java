@@ -65,6 +65,8 @@ final class ReaderIcon extends Drawable {
                 for (int y = 7; y <= 17; y += 5) canvas.drawLine(8, y, 16, y, paint);
                 break;
             case "bookmark":
+            case "bookmark_filled":
+                if (kind.equals("bookmark_filled")) paint.setStyle(Paint.Style.FILL_AND_STROKE);
                 p.moveTo(6, 3); p.lineTo(18, 3); p.lineTo(18, 22); p.lineTo(12, 17); p.lineTo(6, 22); p.close(); canvas.drawPath(p, paint); break;
             case "moon":
                 p.moveTo(14, 2); p.cubicTo(9, 11, 13, 16, 22, 14); p.cubicTo(20, 25, 4, 25, 3, 13); p.cubicTo(2, 7, 7, 2, 14, 2); canvas.drawPath(p, paint); break;

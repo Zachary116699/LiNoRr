@@ -225,6 +225,7 @@ final class PagedReaderView extends View {
         ActionMode old = selectionMode; selectionMode = null; selectionStart = selectionEnd = -1; selectionHandle = 0;
         if (old != null) old.finish(); invalidate();
     }
+    int visibleEnd() { return pageEnd(); }
     private int pageEnd() { return page + 1 < starts.size() ? layout.getLineStart(starts.get(page + 1)) : text.length(); }
     private int textOffset(float x, float y) {
         int top = layout.getLineTop(starts.get(page));
