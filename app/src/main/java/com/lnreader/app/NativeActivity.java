@@ -215,14 +215,17 @@ public final class NativeActivity extends Activity {
         ShelfSurface surface = new ShelfSurface(this, this::openDrawer); root.addView(surface, new LinearLayout.LayoutParams(-1, -1));
         LinearLayout outer = column(); surface.addView(outer, new FrameLayout.LayoutParams(-1, -1));
         int headerColor = shelfHeaderBg();
-        LinearLayout brand = row(); padding(brand, 20, 8); brand.setBackgroundColor(headerColor); TextView logo = text("LiNoRr", 25, shelfInk()); logo.setTypeface(Typeface.SERIF); padding(logo, 0, 8); weighted(brand, logo);
+        LinearLayout brand = row(); padding(brand, 20, 8); brand.setBackgroundColor(headerColor); TextView logo = text("LiNoRr", 25, shelfInk()); logo.setTypeface(Typeface.SERIF); padding(logo, 0, 8); logo.setSingleLine(); logo.setEllipsize(TextUtils.TruncateAt.END); logo.setMaxWidth(getResources().getDisplayMetrics().widthPixels - dp(40 + 126 + 12 + (privacyMode ? 42 : 0))); brand.addView(logo);
         logo.setOnClickListener(v -> titleTapped());
         if (privacyMode) brand.addView(shelfIcon("eye", "退出隐私模式", this::togglePrivacy), new LinearLayout.LayoutParams(dp(42), dp(44)));
+        brand.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         brand.addView(shelfIcon(shelfDark() ? "sun" : "moon", "日夜间模式切换", this::toggleNight), new LinearLayout.LayoutParams(dp(42), dp(44)));
         View spacer = new View(this); brand.addView(spacer, new LinearLayout.LayoutParams(dp(6), 1));
         brand.addView(shelfIcon("settings", "书架设置", this::shelfSettings), new LinearLayout.LayoutParams(dp(42), dp(44)));
         brand.addView(new View(this), new LinearLayout.LayoutParams(dp(6), 1));
-        brand.addView(shelfIcon("import", "导入书籍", () -> ensureStorage(this::importDialog)), new LinearLayout.LayoutParams(dp(42), dp(44))); outer.addView(brand);
+        brand.addView(shelfIcon("import", "导入书籍", () -> ensureStorage(this::importDialog)), new LinearLayout.LayoutParams(dp(42), dp(44)));
+        if (privacyMode) { int ink = shelfDark() ? 0xffffd5e0 : 0xffffedf2; logo.setTextColor(ink); for (int i = 0; i < brand.getChildCount(); i++) if (brand.getChildAt(i) instanceof ImageButton) ((ReaderIcon) ((ImageButton) brand.getChildAt(i)).getDrawable()).color(ink); }
+        outer.addView(brand);
         getWindow().setStatusBarColor(headerColor);
         content = column(); padding(content, 20, 10); outer.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout shelfHeading = row(); LinearLayout shelfLink = row(); shelfLink.setContentDescription("打开书架抽屉"); shelfLink.setOnClickListener(v -> openDrawer());
@@ -287,9 +290,15 @@ public final class NativeActivity extends Activity {
         titleTapAt = 0; if (isFinishing() || current != null || importing) return;
         LinearLayout body = column();
         String version; try { version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Exception ignored) { version = "—"; }
-        infoRow(body, "版本", version); gap(body, 8);
-        body.addView(text("作者", 14, uiMuted())); body.addView(text("超绝可爱大水笔 & ChatGPT 6.1 Sol", 16, uiInk())); gap(body, 12);
-        body.addView(text("轻量本地 TXT 阅读器", 15, uiMuted())); Dialog dialog = sheet("关于 LiNoRr", body); body.addView(button("关闭", true, dialog::dismiss));
+        LinearLayout hero = column(); hero.setGravity(Gravity.CENTER); padding(hero, 0, 10);
+        ImageView icon = new ImageView(this); icon.setContentDescription("应用图标"); icon.setImageDrawable(getApplicationInfo().loadIcon(getPackageManager())); icon.setScaleType(ImageView.ScaleType.FIT_CENTER); hero.addView(icon, new LinearLayout.LayoutParams(dp(80), dp(80))); gap(hero, 12);
+        TextView name = text("LiNoRr", 27, uiInk()); name.setTypeface(Typeface.SERIF); hero.addView(name, new LinearLayout.LayoutParams(-2, -2)); gap(hero, 5);
+        TextView description = text("轻量本地 TXT 阅读器", 14, uiMuted()); description.setGravity(Gravity.CENTER); hero.addView(description, new LinearLayout.LayoutParams(-2, -2)); gap(hero, 12);
+        TextView badge = text(version, 14, uiAccent()); padding(badge, 14, 5); badge.setBackground(shape(blend(uiBg(), uiAccent(), .10f), 20)); badge.setContentDescription("应用版本 " + version); hero.addView(badge, new LinearLayout.LayoutParams(-2, -2)); body.addView(hero); gap(body, 14);
+        LinearLayout authors = column(); outlinePanel(authors); authors.setGravity(Gravity.CENTER); padding(authors, 12, 12);
+        TextView authorLabel = text("作者", 13, uiMuted()); authorLabel.setGravity(Gravity.CENTER); authors.addView(authorLabel); gap(authors, 5);
+        TextView authorNames = text("超绝可爱大水笔 & ChatGPT 6.1 Sol", 15, uiInk()); authorNames.setGravity(Gravity.CENTER); authorNames.setLineSpacing(dp(3), 1); authors.addView(authorNames); body.addView(authors); gap(body, 18);
+        Dialog dialog = sheet("关于 LiNoRr", body); description.setTextColor(uiMuted()); authorLabel.setTextColor(uiMuted()); badge.setTextColor(uiAccent()); body.addView(button("关闭", true, dialog::dismiss));
     }
     private void togglePrivacy() {
         if (importing || current != null) return;
@@ -396,7 +405,7 @@ public final class NativeActivity extends Activity {
     }
     private boolean shelfDark() { return lib != null && lib.prefs().optBoolean("night", false); }
     private int[] uiPalette() {
-        if (privacyMode) return new int[]{0xfffaf3f2, 0xffefdfdc, 0xff96584f, 0xff2c2020, 0xff3b2928, 0xffe0b3ac};
+        if (privacyMode) return new int[]{0xfffff1f3, 0xff8b1736, 0xffb51f49, 0xff2a0d16, 0xff4a1226, 0xffff8faf};
         String name = lib == null ? "forest" : lib.state.optString("uiTheme", "forest");
         switch (name) {
             case "blue": return new int[]{0xfff3f6f8, 0xffe1eaf0, 0xff4b667b, 0xff1f262c, 0xff2c3741, 0xffb3cbdd};
@@ -412,13 +421,13 @@ public final class NativeActivity extends Activity {
     private static int blend(int a, int b, float amount) { return Color.rgb(Math.round(Color.red(a) * (1 - amount) + Color.red(b) * amount), Math.round(Color.green(a) * (1 - amount) + Color.green(b) * amount), Math.round(Color.blue(a) * (1 - amount) + Color.blue(b) * amount)); }
     private int uiBg() { return current != null ? readerBg() : shelfBg(); }
     private int uiInk() { return current != null ? readerInk() : shelfInk(); }
-    private int uiMuted() { return shelfDark() ? 0xffb0b8a8 : MUTED; }
+    private int uiMuted() { return current == null && privacyMode ? shelfMuted() : shelfDark() ? 0xffb0b8a8 : MUTED; }
     private int uiAccent() { return current != null ? shelfDark() ? 0xffb9cdb0 : ACCENT : uiPalette()[shelfDark() ? 5 : 2]; }
     private int dangerInk() { return shelfDark() ? 0xffe7aaa2 : 0xffa4524c; }
     private boolean destructive(String label) { return label.contains("移除") || label.contains("移出") || label.contains("删除") || label.contains("重置") || label.contains("恢复默认"); }
     private void toggleNight() { set(lib.prefs(), "night", !shelfDark()); persist(); if (current != null) { repaintReader(); } else showShelf(); }
-    private int shelfInk() { return shelfDark() ? 0xffe5e6dd : INK; }
-    private int shelfMuted() { return shelfDark() ? 0xffb3baac : MUTED; }
+    private int shelfInk() { return privacyMode ? shelfDark() ? 0xffffe6ed : 0xff5b172c : shelfDark() ? 0xffe5e6dd : INK; }
+    private int shelfMuted() { return privacyMode ? shelfDark() ? 0xffd7a7b5 : 0xff956372 : shelfDark() ? 0xffb3baac : MUTED; }
     private Button shelfButton(String title, Runnable action) { Button b = button(title, false, action); b.setTextColor(privacyMode ? uiAccent() : shelfDark() ? 0xffcbd8c3 : ACCENT); return b; }
     private ImageButton shelfIcon(String kind, String title, Runnable action) { ImageButton b = readerIconButton(kind, title, action); padding(b, 8, 8); b.setImageDrawable(new ReaderIcon(kind, uiAccent(), getResources().getDisplayMetrics().density)); return b; }
     private boolean isBuiltinShelf(String id) { return id.equals("all") || id.equals("recent") || id.equals("default") || id.equals("private"); }
@@ -854,7 +863,7 @@ public final class NativeActivity extends Activity {
         readerHeader.addView(readerIconButton("bookmark", "书签", this::marks), new LinearLayout.LayoutParams(dp(48), dp(48))); surface.addView(readerHeader, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
         readerFooter = column(); readerFooter.setBackgroundColor(readerBg()); padding(readerFooter, 16, 8); progressLabel = text("", 14, MUTED); readerFooter.addView(progressLabel);
         LinearLayout navigation = row(); navigation.addView(readerButton("上一章", () -> chapterStep(-1)));
-        progress = new SeekBar(this); progress.setMax(1000); progress.setContentDescription("阅读进度"); weighted(navigation, progress);
+        progress = new ThumbSeekBar(this); progress.setMax(1000); progress.setContentDescription("阅读进度"); weighted(navigation, progress);
         navigation.addView(readerButton("下一章", () -> chapterStep(1))); readerFooter.addView(navigation);
         LinearLayout actions = row(); weighted(actions, readerAction("目录", "catalog", this::catalog));
         weighted(actions, readerAction("日 / 夜", shelfDark() ? "sun" : "moon", this::toggleNight));
@@ -869,7 +878,12 @@ public final class NativeActivity extends Activity {
         deviceStatus = text("", 14, readerInk()); deviceStatus.setAlpha(.75f); deviceStatus.setSingleLine(true); quietFooter.addView(deviceStatus); updateDeviceStatus();
         FrameLayout.LayoutParams quietParams = new FrameLayout.LayoutParams(-1, dp(28), Gravity.BOTTOM); quietParams.bottomMargin = dp(4); surface.addView(quietFooter, quietParams); surface.menuArea(quietFooter);
         showControls(controlsVisible);
-        progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() { public void onProgressChanged(SeekBar s, int p, boolean fromUser) {} public void onStartTrackingTouch(SeekBar s) {} public void onStopTrackingTouch(SeekBar s) { jump((int) ((long) s.getProgress() * Math.max(0, source.length() - 1) / 1000)); persist(); } });
+        progress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            private void seek(SeekBar s) { jump((int) ((long) s.getProgress() * Math.max(0, source.length() - 1) / 1000)); persist(); }
+            public void onProgressChanged(SeekBar s, int p, boolean fromUser) { if (fromUser && !((ThumbSeekBar) s).isTouchTracking()) seek(s); }
+            public void onStartTrackingTouch(SeekBar s) {}
+            public void onStopTrackingTouch(SeekBar s) { if (((ThumbSeekBar) s).shouldCommit()) seek(s); }
+        });
         jump(offset);
     }
     private void indexPages(int generation) {

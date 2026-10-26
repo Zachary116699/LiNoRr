@@ -28,6 +28,30 @@ public class GestureChecks extends Instrumentation {
     private void inject(int action, float x, float y, long down) {
         MotionEvent event = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0); event.setSource(InputDevice.SOURCE_TOUCHSCREEN); check(getUiAutomation().injectInputEvent(event, true), "Pointer injection failed"); event.recycle();
     }
+    private void progressChecks(NativeActivity activity, JSONObject book) throws Exception {
+        Library lib = (Library) get(activity, "lib");
+        for (String mode : new String[]{"paged", "scroll"}) {
+            runOnMainSync(() -> { set(lib.prefs(), "readingMode", mode); call(activity, "buildReader", new Class<?>[]{int.class}, 0); call(activity, "showControls", new Class<?>[]{boolean.class}, true); }); waitForIdleSync(); Thread.sleep(220);
+            ThumbSeekBar bar = (ThumbSeekBar) get(activity, "progress"); int[] origin = new int[2]; float[] points = new float[4];
+            runOnMainSync(() -> { bar.getLocationOnScreen(origin); RectF thumb = bar.thumbArea(); points[0] = origin[0] + thumb.centerX(); points[1] = origin[1] + thumb.centerY(); points[2] = origin[0] + bar.getWidth() * .85f; points[3] = origin[0] + bar.getWidth() * .60f; });
+            int before = book.optInt("position"); long at = SystemClock.uptimeMillis();
+            inject(MotionEvent.ACTION_DOWN, points[2], points[1], at); inject(MotionEvent.ACTION_UP, points[2], points[1], at); Thread.sleep(80);
+            check(book.optInt("position") == before && bar.getProgress() == 0, "Track tap changed reading position: " + mode);
+            at = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, points[2], points[1], at); inject(MotionEvent.ACTION_MOVE, points[0], points[1], at); inject(MotionEvent.ACTION_UP, points[0], points[1], at); Thread.sleep(80);
+            check(book.optInt("position") == before && (boolean) get(activity, "controlsVisible"), "Track drag reached reader or sought: " + mode);
+            at = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, points[0], points[1], at); inject(MotionEvent.ACTION_MOVE, points[3], points[1], at); Thread.sleep(70);
+            check(book.optInt("position") == before && bar.getProgress() > 300, "Thumb did not preview without committing: " + mode);
+            inject(MotionEvent.ACTION_UP, points[3], points[1], at); Thread.sleep(120); check(book.optInt("position") > before, "Thumb release did not seek: " + mode);
+            before = book.optInt("position"); int oldProgress = bar.getProgress();
+            runOnMainSync(() -> points[0] = origin[0] + bar.thumbArea().centerX()); at = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, points[0], points[1], at); inject(MotionEvent.ACTION_MOVE, origin[0] + bar.getWidth() * .15f, points[1], at); inject(MotionEvent.ACTION_CANCEL, origin[0] + bar.getWidth() * .15f, points[1], at); Thread.sleep(100);
+            check(book.optInt("position") == before && bar.getProgress() == oldProgress, "Canceled thumb drag committed: " + mode);
+            at = SystemClock.uptimeMillis(); inject(MotionEvent.ACTION_DOWN, points[0], points[1], at); inject(MotionEvent.ACTION_UP, points[0], points[1], at); Thread.sleep(80);
+            check(book.optInt("position") == before && bar.getProgress() == oldProgress, "Thumb tap without dragging changed progress: " + mode);
+            runOnMainSync(() -> { Bundle args = new Bundle(); args.putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, 250); check(bar.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId(), args), "Accessibility seek rejected"); }); Thread.sleep(100);
+            check(book.optInt("position") < before && book.optInt("position") > 0, "Accessibility seek did not update reading position: " + mode);
+        }
+        runOnMainSync(() -> { set(lib.prefs(), "readingMode", "paged"); call(activity, "buildReader", new Class<?>[]{int.class}, 0); call(activity, "showControls", new Class<?>[]{boolean.class}, false); }); waitForIdleSync(); Thread.sleep(200);
+    }
     private void shelfChecks(NativeActivity activity) throws Exception {
         Library library = (Library) get(activity, "lib"); String active = (String) get(activity, "active"), original = active.startsWith("qa-drag-") ? "all" : active;
         JSONObject a = json("id", "qa-drag-a", "name", "Drag A"), b = json("id", "qa-drag-b", "name", "Drag B");
@@ -71,7 +95,7 @@ public class GestureChecks extends Instrumentation {
             JSONObject book = json("id", id, "title", "Gesture QA", "position", 0, "shelf", "default", "marks", new JSONArray());
             runOnMainSync(() -> { set(library.prefs(), "readingMode", "paged"); set(library.prefs(), "pageAnimation", "slide"); call(activity, "openBook", new Class<?>[]{JSONObject.class, int.class}, book, 0); });
             for (int i = 0; i < 200 && get(activity, "pageTotals") == null; i++) Thread.sleep(50);
-            Thread.sleep(400); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, 0)); final int original = book.optInt("position");
+            Thread.sleep(400); progressChecks(activity, book); runOnMainSync(() -> call(activity, "jump", new Class<?>[]{int.class}, 0)); final int original = book.optInt("position");
             long at = SystemClock.uptimeMillis(); touch(activity, MotionEvent.ACTION_DOWN, .8f, at, at); touch(activity, MotionEvent.ACTION_MOVE, .3f, at, at + 100); Thread.sleep(100);
             runOnMainSync(() -> { PagedReaderView view = (PagedReaderView) get(activity, "pagedReader"); check(view.dragFraction() > .45f && view.dragFraction() < .55f, "Held page does not match half-width displacement"); Bitmap image = Bitmap.createBitmap(view.getWidth(), view.getHeight(), Bitmap.Config.ARGB_8888); view.draw(new Canvas(image)); try (OutputStream out = new FileOutputStream(new File(getTargetContext().getCacheDir(), "drag-half.png"))) { image.compress(Bitmap.CompressFormat.PNG, 100, out); } catch (IOException e) { throw new RuntimeException(e); } image.recycle(); });
             check(book.optInt("position") == original, "Preview changed history before release");
@@ -169,7 +193,7 @@ public class GestureChecks extends Instrumentation {
                 android.widget.ListView entries = (android.widget.ListView) ((ViewGroup) input.getParent().getParent()).getChildAt(1); int before = entries.getAdapter().getCount(); input.setText("NoSuchChapter"); check(entries.getAdapter().getCount() == before, "Typing filtered the catalog");
                 find(dialog.getWindow().getDecorView(), "搜索章节").performClick(); check(entries.getAdapter().getCount() == 0, "Catalog search icon did not submit"); input.setText(""); check(entries.getAdapter().getCount() == 0, "Clearing auto-submitted the catalog"); input.onEditorAction(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH); check(entries.getAdapter().getCount() == before, "Catalog keyboard search did not submit"); dialog.dismiss(); break;
             } });
-            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: short and medium swipes, reversal, continuous paging, text selection, bottom menu taps, expanded middle area and menu paging/scroll/volume isolation\n"); finish(Activity.RESULT_OK, result);
+            runOnMainSync(() -> call(activity, "back", new Class<?>[]{})); result.putString("stream", "PASS: short and medium swipes, reversal, continuous paging, text selection, bottom menu taps, expanded middle area and menu paging/scroll/volume isolation; thumb-only progress, canceled and accessibility seeking\n"); finish(Activity.RESULT_OK, result);
         } catch (Throwable error) { result.putString("stream", "FAIL: " + android.util.Log.getStackTraceString(error)); finish(Activity.RESULT_CANCELED, result); }
         finally { if (fixture != null) fixture.delete(); }
     }
