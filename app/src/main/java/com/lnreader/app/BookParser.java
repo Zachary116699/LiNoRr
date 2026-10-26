@@ -72,13 +72,20 @@ public final class BookParser {
         return value.replaceFirst("^\\uFEFF", "").replace("\r\n", "\n").replace('\r', '\n');
     }
     static String read(File file,int limit) throws IOException {
+        StringBuilder text=new StringBuilder();append(file,text,limit);return text.toString();
+    }
+    static void append(File file,StringBuilder text,int limit)throws IOException{if(text.length()>limit)throw new IOException("正文超过当前设备的安全内存上限");scan(file,limit-text.length(),text);}
+    static final class TextInfo{int length;boolean newline,body;}
+    static TextInfo inspect(File file,int limit)throws IOException{return scan(file,limit,null);}
+    private static TextInfo scan(File file,int limit,StringBuilder text)throws IOException{
         byte[] prefix=new byte[2];int n;try(InputStream in=new FileInputStream(file)){n=in.read(prefix);}
         Charset charset=n==2&&(prefix[0]&255)==255&&(prefix[1]&255)==254?StandardCharsets.UTF_16LE:n==2&&(prefix[0]&255)==254&&(prefix[1]&255)==255?StandardCharsets.UTF_16BE:StandardCharsets.UTF_8;
-        try{return read(file,charset,limit);}catch(CharacterCodingException e){if(charset!=StandardCharsets.UTF_8)throw e;return read(file,Charset.forName("GB18030"),limit);}
+        int start=text==null?0:text.length();
+        try{return scan(file,charset,limit,text);}catch(CharacterCodingException e){if(text!=null)text.setLength(start);if(charset!=StandardCharsets.UTF_8)throw e;return scan(file,Charset.forName("GB18030"),limit,text);}
     }
-    private static String read(File file,Charset charset,int limit) throws IOException {
-        StringBuilder text=new StringBuilder();boolean cr=false,first=true;char[] buffer=new char[8192];
-        try(Reader input=new InputStreamReader(new FileInputStream(file),charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT))){int n;while((n=input.read(buffer))!=-1){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("正文加载已取消");for(int i=0;i<n;i++){char c=buffer[i];if(first){first=false;if(c=='\uFEFF')continue;}if(c=='\n'&&cr){cr=false;continue;}cr=c=='\r';if(text.length()>=limit)throw new IOException("正文超过当前设备的安全内存上限");text.append(cr?'\n':c);}}}return text.toString();
+    private static TextInfo scan(File file,Charset charset,int limit,StringBuilder text)throws IOException{
+        TextInfo info=new TextInfo();boolean cr=false,first=true;char[] buffer=new char[8192];
+        try(Reader input=new InputStreamReader(new FileInputStream(file),charset.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT))){int n;while((n=input.read(buffer))!=-1){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("正文加载已取消");for(int i=0;i<n;i++){char c=buffer[i];if(first){first=false;if(c=='\uFEFF')continue;}if(c=='\0')throw new IOException("正文包含无效空字符");if(c=='\n'&&cr){cr=false;continue;}cr=c=='\r';if(info.length>=limit)throw new IOException("正文超过当前设备的安全内存上限");c=cr?'\n':c;info.length++;info.newline=c=='\n';info.body|=c>0x20;if(text!=null)text.append(c);}}}return info;
     }
     public static List<Chapter> parse(String text) { return parse(text, Rules.defaults()); }
     public static List<Chapter> parse(String text, Rules rules) {

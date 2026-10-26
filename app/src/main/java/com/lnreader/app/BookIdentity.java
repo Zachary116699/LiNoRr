@@ -6,6 +6,14 @@ import java.util.*;
 
 /** File names and paths never affect identity or generated cover colors. */
 final class BookIdentity {
+    static final class Fingerprint{final String hash;final long size;Fingerprint(String hash,long size){this.hash=hash;this.size=size;}}
+    static String fingerprint(InputStream input,long expected,long limit)throws Exception{
+        return scan(input,expected,limit).hash;
+    }
+    static Fingerprint scan(InputStream input,long expected,long limit)throws Exception{
+        MessageDigest digest=MessageDigest.getInstance("SHA-256");for(int shift=56;shift>=0;shift-=8)digest.update((byte)(expected>>>shift));byte[] buffer=new byte[32768];long total=0;int n;
+        while((n=input.read(buffer))!=-1){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("指纹任务已取消");if((total+=n)>limit)throw new IOException("文件超出大小限制");digest.update(buffer,0,n);}return new Fingerprint(total==expected?hex(digest.digest()):"",total);
+    }
     static String fingerprint(byte[] bytes) throws Exception {
         MessageDigest digest=MessageDigest.getInstance("SHA-256");long length=bytes.length;
         for(int shift=56;shift>=0;shift-=8)digest.update((byte)(length>>>shift));digest.update(bytes);

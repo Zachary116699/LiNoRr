@@ -12,4 +12,6 @@ try {
   execFileSync(executable('java'), ['-ea', '-cp', output, 'com.lnreader.app.BookParserTest', process.env.LINORR_GU_FIXTURE || '../xs_local_html/txt/蛊真人.txt'], { cwd: project, stdio: 'inherit' });
   execFileSync(executable('javac'), ['-d', output, 'app/src/main/java/com/lnreader/app/ThumbSwipe.java', 'tests/ThumbSwipeTest.java'], { cwd: project, stdio: 'inherit' });
   execFileSync(executable('java'), ['-ea', '-cp', output, 'com.lnreader.app.ThumbSwipeTest'], { cwd: project, stdio: 'inherit' });
+  execFileSync(executable('javac'), ['-cp', output, '-d', output, 'tests/StreamBudgetTest.java'], { cwd: project, stdio: 'inherit' });
+  execFileSync(executable('java'), ['-Xmx64m', '-ea', '-cp', output, 'com.lnreader.app.StreamBudgetTest'], { cwd: project, stdio: 'inherit' });
 } finally { rmSync(output, { recursive: true, force: true }); }

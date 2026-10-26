@@ -138,12 +138,13 @@ final class BookStore implements AutoCloseable {
     synchronized List<String> operationIds(){List<String> ids=new ArrayList<>();try(Cursor c=db.rawQuery("SELECT id FROM operations ORDER BY CASE WHEN kind='stage' THEN 1 ELSE 0 END,id",null)){while(c.moveToNext())ids.add(c.getString(0));}return ids;}
     synchronized JSONObject operation(String id){try(Cursor c=db.rawQuery("SELECT kind,source,target,payload FROM operations WHERE id=?",new String[]{id})){if(!c.moveToFirst())return null;String payload=c.getString(3);if("@chunks".equals(payload)){StringBuilder joined=new StringBuilder();try(Cursor parts=db.rawQuery("SELECT text FROM operation_payload WHERE operation=? ORDER BY chunk",new String[]{id})){while(parts.moveToNext())joined.append(parts.getString(0));}payload=joined.toString();}return Library.json("id",id,"kind",c.getString(0),"source",c.getString(1),"target",c.getString(2),"payload",payload);}}
     synchronized Set<String> importSources(){Set<String> paths=new HashSet<>();try(Cursor c=db.rawQuery("SELECT source FROM operations WHERE kind='import'",null)){while(c.moveToNext())paths.add(c.getString(0));}return paths;}
-    synchronized void finish(String operation) {db.delete("operation_payload","operation=?",new String[]{operation});db.delete("operations","id=?",new String[]{operation});}
+    synchronized void finish(String operation){db.beginTransaction();try{db.delete("operation_payload","operation=?",new String[]{operation});db.delete("operations","id=?",new String[]{operation});db.setTransactionSuccessful();}finally{db.endTransaction();}}
     synchronized void remove(String id) {db.beginTransaction();try{db.delete("membership","book=?",new String[]{id});db.delete("extra_parts","book=?",new String[]{id});db.delete("books","id=?",new String[]{id});db.setTransactionSuccessful();}finally{db.endTransaction();}synchronized(cache){cache.remove(id);}dirty.remove(id);revision.incrementAndGet();}
     synchronized List<String> partNames(String id){List<String> names=new ArrayList<>();try(Cursor c=db.rawQuery("SELECT filename FROM extra_parts WHERE book=? ORDER BY ordinal",new String[]{id})){while(c.moveToNext())names.add(c.getString(0));}return names;}
     synchronized List<String> sourceNames(String id){List<String> names=new ArrayList<>();try(Cursor c=db.rawQuery("SELECT source FROM extra_parts WHERE book=? ORDER BY ordinal",new String[]{id})){while(c.moveToNext())names.add(new File(c.getString(0)).getName());}return names;}
     synchronized List<String> allIds() {List<String> ids=new ArrayList<>();try(Cursor c=db.rawQuery("SELECT id FROM books ORDER BY id",null)){while(c.moveToNext())ids.add(c.getString(0));}return ids;}
     synchronized int directoryReferences(String directory) {try(Cursor c=db.rawQuery("SELECT count(*) FROM books WHERE directory=?",new String[]{directory})){c.moveToFirst();return c.getInt(0);}}
+    synchronized JSONObject atDirectory(String directory){try(Cursor c=db.rawQuery("SELECT id,json FROM books WHERE directory=? LIMIT 2",new String[]{directory})){if(!c.moveToFirst())return null;String id=c.getString(0),json=c.getString(1);return c.moveToNext()?null:record(id,json);}}
     /** Legacy JSON is read one book at a time; no whole-library string or 32 MB ceiling. */
     synchronized JSONObject importJson(File input) throws Exception {
         JSONObject state = new JSONObject(); db.beginTransaction();
@@ -164,6 +165,7 @@ final class BookStore implements AutoCloseable {
         }
     }
     synchronized void checkpoint(){flushUnchecked();try(Cursor c=db.rawQuery("PRAGMA wal_checkpoint(FULL)",null)){if(!c.moveToFirst()||c.getInt(0)!=0||c.getLong(1)!=c.getLong(2))throw new android.database.sqlite.SQLiteException("数据库仍在写入，请稍后重试迁移");}}
+    synchronized void verify()throws IOException{try(Cursor c=db.rawQuery("PRAGMA quick_check",null)){if(!c.moveToFirst()||!"ok".equals(c.getString(0)))throw new IOException("书库完整性检查未通过，原书库已保留");}}
     private void flushUnchecked(){try{flush();}catch(Exception e){throw new IllegalStateException(e);}}
     @Override public synchronized void close(){if(!db.isOpen())return;try{flushUnchecked();}finally{closed=true;db.close();synchronized(cache){cache.clear();}dirty.clear();}}
 }

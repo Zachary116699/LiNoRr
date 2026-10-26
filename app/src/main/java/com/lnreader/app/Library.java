@@ -38,8 +38,11 @@ final class Library {
         this.context = context;
         root = new File(context.getFilesDir(), "library"); if (!root.exists() && !root.mkdirs()) throw new IOException("无法创建书库");
         cache = new File(context.getCacheDir(), "books"); BackupFiles.mkdir(cache);
+        String migrationWarning="";if(canWrite())try{BackupMigration.recover(context);}catch(Exception e){migrationWarning="上次迁移尚待清理："+e.getMessage();}
+        if(canWrite())BackupMigration.verifyActive(context);
         BackupLocation.Choice location = BackupLocation.choose(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), context.getSharedPreferences("storage", 0).getString("backupPath", ""), canWrite());
         backup = location.directory; maintenanceWarning = location.warning;
+        if(!migrationWarning.isEmpty())maintenanceWarning=migrationWarning;
         if (canWrite()) context.getSharedPreferences("storage", 0).edit().putString("backupPath", backup.getPath()).apply();
         File metadata = new File(root, "library.json");
         File portable = new File(backup, "userdata.json");
@@ -160,7 +163,7 @@ final class Library {
     void applyPaths(JSONObject ignored) { /* Records are updated directly by ID. */ }
     private static void pruneEmptyCategories(File backup) {
         File[] categories = new File(backup,"book").listFiles();
-        if (categories != null) for (File category : categories) { String[] children = category.list(); if (category.isDirectory() && children != null && children.length == 0) category.delete(); }
+        if(categories!=null)for(File category:categories)if(category.isDirectory())try(java.nio.file.DirectoryStream<java.nio.file.Path> children=java.nio.file.Files.newDirectoryStream(category.toPath())){if(!children.iterator().hasNext())java.nio.file.Files.deleteIfExists(category.toPath());}catch(IOException ignored){}
     }
     interface Progress { void update(int completed, int total, String label); }
     JSONObject removeBooks(JSONObject ignored, Set<String> ids) throws Exception { return removeBooks(ignored,ids,(d,t,l)->{}); }
@@ -195,29 +198,28 @@ final class Library {
     }
     JSONObject relocate(File requested,JSONObject ignored) throws Exception {
         if(!canWrite())throw new IOException("请先授权文件读写权限");
-        File target=requested.getCanonicalFile(), oldRoot=backup.getCanonicalFile();
+        File target=requested.getCanonicalFile(),oldRoot=backup.getCanonicalFile();
         if(target.equals(oldRoot))return state;
-        if(target.getPath().startsWith(oldRoot.getPath()+File.separator)||oldRoot.getPath().startsWith(target.getPath()+File.separator))throw new IOException("请选择与当前书库互不包含的文件夹");
-        BackupFiles.mkdir(target);
-        for(String name:new String[]{BookStore.FILE,BookStore.FILE+"-wal",BookStore.FILE+"-shm","book",".imports","userdata.json"})if(new File(target,name).exists())throw new IOException("目标文件夹已有书库或导入暂存，请选择空文件夹");
-        saveSnapshot(snapshot()); store.checkpoint();
-        // Copy into a hidden staging root; the selected backup location is committed last.
-        File stage=new File(target,".migration-"+UUID.randomUUID()); BackupFiles.mkdir(stage);
-        try {
-            for(String name:new String[]{"book",".imports"}){File source=new File(oldRoot,name);if(source.exists())BackupFiles.copyTree(source,new File(stage,name));}
-            store.checkpoint(); BackupFiles.copy(store.file,new File(stage,BookStore.FILE));
-            BackupFiles.copy(new File(oldRoot,"userdata.json"),new File(stage,"userdata.json"));
-            for(String name:new String[]{"book",".imports",BookStore.FILE,"userdata.json"}) {File f=new File(stage,name);if(f.exists())java.nio.file.Files.move(f.toPath(),new File(target,name).toPath());}
-            if(!context.getSharedPreferences("storage",0).edit().putString("backupPath",target.getPath()).commit())throw new IOException("无法保存备份路径");
-        } catch(Exception error) {
-            // Never remove unrelated target files; these names were absent before this operation.
-            for(String name:new String[]{"book",".imports",BookStore.FILE,"userdata.json"})BackupFiles.deleteTree(new File(target,name));
+        if(target.toPath().startsWith(oldRoot.toPath())||oldRoot.toPath().startsWith(target.toPath()))throw new IOException("请选择与当前书库互不包含的文件夹");
+        BackupFiles.mkdir(target);saveSnapshot(snapshot());store.checkpoint();
+        BackupMigration.Session migration=new BackupMigration.Session(context,oldRoot,target);BookStore replacement=null;
+        try{
+            for(String name:new String[]{"book",".imports"}){File source=new File(oldRoot,name);if(source.exists())BackupFiles.copyTree(source,new File(migration.stage,name));}
+            store.checkpoint();BackupFiles.copy(store.file,new File(migration.stage,BookStore.FILE));
+            BackupFiles.copy(new File(oldRoot,"userdata.json"),new File(migration.stage,"userdata.json"));
+            try(BookStore staged=new BookStore(migration.stage)){staged.verify();if(staged.count()!=store.count())throw new IOException("迁移目录记录数量不一致");staged.meta("migrationId",migration.plan.optString("id"));staged.checkpoint();}
+            migration.publish();
+            replacement=new BookStore(target);replacement.verify();replacement.checkpoint();
+            migration.commit();
+        }catch(Exception error){
+            if(replacement!=null)try{replacement.close();}catch(Exception close){error.addSuppressed(close);}
+            try{migration.rollback();}catch(Exception cleanup){error.addSuppressed(cleanup);}
             throw error;
-        } finally { BackupFiles.deleteTree(stage); }
-        store.close();backup=target;importRoot=null;stagingCreates=0;store=new BookStore(target);
+        }
+        // From this point cleanup errors cannot change or misreport the committed active library.
+        BookStore previous=store;store=replacement;backup=target;importRoot=null;stagingCreates=0;
         store.changed=(b,k)->{if(k.equals("title")||k.equals("shelfIds")||k.equals("shelf"))pendingPaths.add(b.optString("id"));};
-        try {BackupFiles.deleteTree(new File(oldRoot,"book"));BackupFiles.deleteTree(new File(oldRoot,".imports"));for(String name:new String[]{BookStore.FILE,BookStore.FILE+"-wal",BookStore.FILE+"-shm","userdata.json"})java.nio.file.Files.deleteIfExists(new File(oldRoot,name).toPath());}
-        catch(IOException error){maintenanceWarning="迁移已完成，旧目录有文件未能清理";}
+        try{previous.close();BackupMigration.recover(context);}catch(Exception error){maintenanceWarning="迁移已完成，旧副本将在下次启动继续清理："+error.getMessage();}
         return state;
     }
     static boolean emptyPortable(File folder) {
@@ -233,12 +235,28 @@ final class Library {
             JSONObject op=store.operation(operationID);if(op==null)continue;
             interrupted(); String kind=op.optString("kind"), operation=op.getString("id");
             if(kind.equals("stage")) {File stage=BackupFiles.child(backup,op.getString("source"));if(stage.getName().startsWith(".import-"))BackupFiles.deleteTree(stage);store.finish(operation);continue;}
+            if(op.optString("payload").isEmpty()){
+                // Repair the old split-cleanup window only when persisted state proves completion.
+                if(kind.equals("import")||kind.equals("move")){JSONObject existing=store.atDirectory(op.optString("target"));boolean complete=existing!=null;if(complete)for(File part:partFiles(existing))complete&=part.isFile();if(complete){store.finish(operation);continue;}}
+                else if(kind.equals("delete")&&store.directoryReferences(op.optString("source"))==0&&!BackupFiles.child(backup,op.optString("source")).exists()){store.finish(operation);continue;}
+                throw new IOException("恢复日志缺少正文，尚不能确认操作是否完成");
+            }
             JSONObject b=new JSONObject(op.getString("payload"));
             if(kind.equals("delete")) {store.remove(b.optString("id"));finishDelete(operation,b);}
             else {
+                if(kind.equals("move")){JSONObject latest=book(b.optString("id"));if(latest==null||!latest.optString("directory").equals(op.optString("source"))&&!latest.optString("directory").equals(op.optString("target"))){store.finish(operation);continue;}}
                 File from=BackupFiles.child(backup,op.getString("source")),target=BackupFiles.child(backup,op.getString("target"));
                 if(!target.exists()&&from.exists())java.nio.file.Files.move(from.toPath(),target.toPath());
-                if(target.isDirectory()) {store.put(b);store.finish(operation);} else maintenanceWarning="部分备份任务需要检查："+b.optString("title");
+                if(target.isDirectory()) {
+                    if(kind.equals("move")){
+                        JSONObject latest=book(b.optString("id"));
+                        if(latest==null){maintenanceWarning="移动恢复找不到书籍记录："+b.optString("title");continue;}
+                        // A move intent owns paths, never reading history edited after the intent.
+                        for(String key:new String[]{"directory","directoryName","organizedTitle"})if(b.has(key))set(latest,key,b.opt(key));
+                        store.flush();
+                    }else store.put(b);
+                    store.finish(operation);
+                }else maintenanceWarning="部分备份任务需要检查："+b.optString("title");
             }
         }catch(Exception error){maintenanceWarning="部分备份任务未完成："+error.getMessage();}
         Set<String> protectedStages=store.importSources();
@@ -301,9 +319,9 @@ final class Library {
         String text, contentHash;
         if (valid) { text = fastText(canonical); contentHash = info.optString("contentHash"); }
         else {
-            StringBuilder all=new StringBuilder();for(File file:files){interrupted();if(all.length()>0&&all.charAt(all.length()-1)!='\n')all.append('\n');all.append(BookParser.read(file,textLimit()-all.length()));}
+            StringBuilder all=new StringBuilder();for(File file:files){interrupted();if(all.length()>0&&all.charAt(all.length()-1)!='\n')all.append('\n');BookParser.append(file,all,textLimit());}
             text = all.toString(); contentHash = BookIdentity.fingerprint(files);
-            atomic(canonical, text.getBytes(StandardCharsets.UTF_8)); atomic(stamp, json("sourceStamp", sourceStamp, "contentHash", contentHash).toString().getBytes(StandardCharsets.UTF_8));
+            atomicText(canonical,text);atomic(stamp,json("sourceStamp",sourceStamp,"contentHash",contentHash).toString().getBytes(StandardCharsets.UTF_8));
         }
         String signature = id("v" + BookParser.VERSION + ":" + contentHash + ":" + rules); List<BookParser.Chapter> toc = null;
         if (index.isFile()) try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(index)))) {
@@ -341,5 +359,10 @@ final class Library {
         AtomicFile atomic = new AtomicFile(file); FileOutputStream output = null;
         try { output = atomic.startWrite(); output.write(bytes); atomic.finishWrite(output); }
         catch (IOException e) { if (output != null) atomic.failWrite(output); throw e; }
+    }
+    private static void atomicText(File file,String text)throws IOException{
+        AtomicFile atomic=new AtomicFile(file);FileOutputStream output=null;
+        try{output=atomic.startWrite();Writer writer=new OutputStreamWriter(output,StandardCharsets.UTF_8);for(int start=0;start<text.length();start+=8192){interrupted();writer.write(text,start,Math.min(8192,text.length()-start));}writer.flush();atomic.finishWrite(output);}
+        catch(IOException e){if(output!=null)atomic.failWrite(output);throw e;}
     }
 }

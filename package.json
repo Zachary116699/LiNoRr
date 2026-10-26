@@ -10,6 +10,8 @@
     "test:android": "node tests/storage-android.mjs --gesture",
     "test:storage": "node tests/storage-android.mjs",
     "test:scale": "node tests/storage-android.mjs --scale",
+    "test:recovery": "node tests/storage-android.mjs --recovery",
+    "test:gallery": "node tests/storage-android.mjs --gallery",
     "test:legacy:android": "node tests/android.mjs",
     "test:polish": "node tests/polish-android.mjs",
     "test:media": "node tests/media-android.mjs",

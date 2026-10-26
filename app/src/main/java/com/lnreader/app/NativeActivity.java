@@ -334,6 +334,7 @@ public final class NativeActivity extends Activity {
     }
     private void togglePrivacy() {
         if (importing || current != null) return;
+        if(privacyMode&&!prepareCounts(this::togglePrivacy))return;
         handler.removeCallbacks(aboutTask); titleTapAt = 0; searchToken++;
         for (Dialog dialog : new ArrayList<>(dialogShells.keySet())) dialog.dismiss();
         if (drawer != null) drawer.dismiss();
@@ -821,6 +822,7 @@ public final class NativeActivity extends Activity {
         if(target.equals(lib.backup)||importEditBlocked())return;
         showBusy("正在准备备份文件夹…");handler.removeCallbacks(exportTask);final Library previous=lib;final String settings=lib.snapshot(),oldPath=lib.backup.getPath();
         saveIo.execute(()->{try{
+            BackupMigration.recover(getApplicationContext());
             boolean existing=new File(target,"userdata.json").isFile()||new File(target,BookStore.FILE).isFile();
             if(existing&&previous.books.isEmpty()){
                 previous.saveSnapshot(settings);
@@ -1429,26 +1431,27 @@ public final class NativeActivity extends Activity {
                 String title=group.size()>1?name:new File(group.get(0).path).getName().replaceFirst("(?i)\\.txt$","");
                 JSONArray parts=new JSONArray(),paths=new JSONArray();Set<String> used=new HashSet<>();Map<String,Integer> counters=new HashMap<>();List<File> rawFiles=new ArrayList<>();
                 long total=0;int characters=0;boolean previousNewline=true;String hash="";
-                int limit=(int)Math.min(80_000_000,Runtime.getRuntime().maxMemory()/8);
+                long limit=80_000_000;
                 for(Entry e:group){
-                    checkImportCanceled();byte[] raw=readImport(e.uri,(int)(limit-total));total+=raw.length;
+                    checkImportCanceled();String expected="";
                     if(group.size()==1){
-                        hash=BookIdentity.fingerprint(raw);
-                        if(attemptedSizes.add(total))for(String old:target.store.missingHashes(total))if(attemptedLegacy.add(old)){checkImportCanceled();try{JSONObject b=target.book(old);set(b,"contentHash",BookIdentity.fingerprint(target.partFiles(b)));target.store.flush();}catch(InterruptedIOException ex){throw ex;}catch(Exception ignored){}}
-                        if(pendingHashes.contains(hash)||target.store.hasHash(hash)){duplicates++;continue groupLoop;}
+                        expected=fingerprintImport(e,e.size,limit);
+                        if(attemptedSizes.add(e.size))for(String old:target.store.missingHashes(e.size))if(attemptedLegacy.add(old)){checkImportCanceled();try{JSONObject b=target.book(old);set(b,"contentHash",BookIdentity.fingerprint(target.partFiles(b)));target.store.flush();}catch(InterruptedIOException ex){throw ex;}catch(Exception ignored){}}
+                        if(!expected.isEmpty()&&(pendingHashes.contains(expected)||target.store.hasHash(expected))){duplicates++;continue groupLoop;}
                     }
-                    String decoded=BookParser.decode(raw);if(decoded.indexOf('\0')>=0||decoded.trim().isEmpty())throw new IOException("不是有效的 TXT 正文");
-                    if(!previousNewline)characters++;characters+=decoded.length();previousNewline=decoded.endsWith("\n");
-                    if(characters>Library.textLimit())throw new IOException("正文超过当前设备的安全内存上限");
                     if(stage==null)stage=target.createStaging();
                     String filename=BackupFiles.name(new File(e.path).getName()),original=filename,key=filename.toLowerCase(Locale.ROOT);int duplicate=counters.getOrDefault(key,2);
                     while(!used.add(filename.toLowerCase(Locale.ROOT)))filename=BackupFiles.numbered(original,duplicate++);
-                    counters.put(key,duplicate);File file=new File(stage,filename);BackupFiles.writeExisting(file,raw);rawFiles.add(file);parts.put(filename);paths.put(e.path);
+                    counters.put(key,duplicate);File file=new File(stage,filename);total+=copyImport(e.uri,file,limit-total);
+                    if(!previousNewline)characters++;
+                    BookParser.TextInfo info=BookParser.inspect(file,Library.textLimit()-characters);if(!info.body)throw new IOException("不是有效的 TXT 正文");characters+=info.length;previousNewline=info.newline;
+                    rawFiles.add(file);parts.put(filename);paths.put(e.path);
+                    if(group.size()==1){hash=BookIdentity.fingerprint(rawFiles);if(!expected.isEmpty()&&!hash.equals(expected))throw new IOException("源文件在导入期间发生变化，请重新导入");}
                     importUpdate(++completed,importTotal,"已备份："+filename);
                 }
                 if(stage==null)continue;
                 if(hash.isEmpty())hash=BookIdentity.fingerprint(rawFiles);
-                if(group.size()>1&&attemptedSizes.add(total))for(String old:target.store.missingHashes(total))if(attemptedLegacy.add(old)){checkImportCanceled();try{JSONObject b=target.book(old);set(b,"contentHash",BookIdentity.fingerprint(target.partFiles(b)));target.store.flush();}catch(InterruptedIOException ex){throw ex;}catch(Exception ignored){}}
+                if(attemptedSizes.add(total))for(String old:target.store.missingHashes(total))if(attemptedLegacy.add(old)){checkImportCanceled();try{JSONObject b=target.book(old);set(b,"contentHash",BookIdentity.fingerprint(target.partFiles(b)));target.store.flush();}catch(InterruptedIOException ex){throw ex;}catch(Exception ignored){}}
                 if(pendingHashes.contains(hash)||target.store.hasHash(hash)){duplicates++;continue;}
                 JSONObject book=json("id",hash.substring(0,24),"contentHash",hash,"title",title,"shelf",shelf,"private",privateBooks,"position",0,"marks",new JSONArray(),"added",System.currentTimeMillis(),"fileSize",total,"length",characters,"parts",parts,"sources",paths);
                 Library.setShelfIds(book,categories.isEmpty()?Arrays.asList(shelf):categories);
@@ -1458,6 +1461,7 @@ public final class NativeActivity extends Activity {
                 if(ready.size()>=32){try{target.commitImports(ready);imported+=ready.size();ready.clear();pendingHashes.clear();}catch(Exception e){failed+=ready.size();if(firstFailure.isEmpty())firstFailure="书库提交未完成，重开应用后会恢复："+e.getMessage();ready.clear();break groupLoop;}}
             } catch(InterruptedIOException e){cancelImport=true;break;}
             catch(Exception e){if(cancelImport||destroyed)break groupLoop;failed++;if(firstFailure.isEmpty())firstFailure=new File(group.get(0).path).getName()+"："+e.getMessage();}
+            catch(OutOfMemoryError e){failed++;if(firstFailure.isEmpty())firstFailure="设备内存不足，请暂停其他任务后重试";cancelImport=true;break;}
             finally{
                 if(stage!=null)deleteStaging(stage);
                 completed=groupStart+group.size()+1;importUpdate(completed,importTotal,"正在整理书籍…");
@@ -1474,7 +1478,18 @@ public final class NativeActivity extends Activity {
         });
     }
     private void checkImportCanceled() throws InterruptedIOException {Library.interrupted();if(cancelImport||destroyed)throw new InterruptedIOException("导入已暂停");}
-    private byte[] readImport(Uri uri,int limit)throws IOException{InputStream input=getContentResolver().openInputStream(uri);activeImportInput=input;try{checkImportCanceled();return read(input,limit);}finally{activeImportInput=null;if(input!=null)try{input.close();}catch(IOException ignored){}}}
+    private String fingerprintImport(Entry entry,long expected,long limit)throws Exception{
+        for(int attempt=0;attempt<2;attempt++){
+            try(InputStream input=getContentResolver().openInputStream(entry.uri)){activeImportInput=input;checkImportCanceled();if(input==null)throw new IOException("无法读取源文件");BookIdentity.Fingerprint result=BookIdentity.scan(input,expected,limit);entry.size=result.size;if(!result.hash.isEmpty())return result.hash;expected=result.size;}finally{activeImportInput=null;}
+        }
+        throw new IOException("源文件在导入期间发生变化，请重试");
+    }
+    private long copyImport(Uri uri,File file,long limit)throws IOException{
+        try(InputStream input=getContentResolver().openInputStream(uri);FileOutputStream output=new FileOutputStream(file)){
+            activeImportInput=input;if(input==null)throw new IOException("无法读取源文件");byte[] buffer=new byte[32768];long total=0;int n;
+            while((n=input.read(buffer))!=-1){checkImportCanceled();if((total+=n)>limit)throw new IOException("文件超出大小限制");output.write(buffer,0,n);}checkImportCanceled();output.getFD().sync();return total;
+        }finally{activeImportInput=null;}
+    }
     private void cancelCurrentImport(){cancelImport=true;InputStream input=activeImportInput;if(input!=null)try{input.close();}catch(IOException ignored){}}
     private void startImportProgress() {cancelImport=false;backgroundImport=true;scanMetadataBytes=0;importDone=0;importTotal=0;importLabel="正在扫描文件…";showImportProgress();}
     private void showImportProgress() {
