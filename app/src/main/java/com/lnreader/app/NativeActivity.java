@@ -339,6 +339,8 @@ public final class NativeActivity extends Activity {
         for (Dialog dialog : new ArrayList<>(dialogShells.keySet())) dialog.dismiss();
         if (drawer != null) drawer.dismiss();
         privacyMode = !privacyMode; selectedBooks.clear(); selectionMode = false; query = searchDraft = ""; shelfPage = 0;
+        // Do not reuse rows from the previous visibility scope while its replacement is loading.
+        shelfGeneration++;pageBooks.clear();shelfTotal=0;pageRevision=-1;pageQueryKey="";
         if (!privacyMode && (active.equals("private") || !shelfVisible(active))) active = "all";
         showShelf();
     }
@@ -546,20 +548,23 @@ public final class NativeActivity extends Activity {
             title = text("", horizontal ? 16 : 14, shelfInk()); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END); info.addView(title, new LinearLayout.LayoutParams(-1, horizontal ? -2 : dp(34)));
             LinearLayout status = row(); progressText = text("", 11, shelfMuted()); progressText.setSingleLine(true); weighted(status, progressText); more = shelfIcon("more", "", () -> { if (book != null) bookEditor(book); }); more.setScaleType(ImageView.ScaleType.CENTER); more.setImageDrawable(new ReaderIcon("more", shelfInk(), getResources().getDisplayMetrics().density * .65f)); padding(more, 0, 0); status.addView(more, new LinearLayout.LayoutParams(dp(28), dp(28))); info.addView(status);
             if (horizontal) addView(info, new LinearLayout.LayoutParams(0, -2, 1)); else addView(info);
-            View.OnClickListener click = v -> { if (selectionMode) { if (!selectedBooks.remove(book.optString("id"))) selectedBooks.add(book.optString("id")); renderCards(shelfMatches); } else openBook(book, -1); };
-            View.OnLongClickListener hold = v -> { selectionMode = true; toolsExpanded = true; updateShelfTools(); selectedBooks.add(book.optString("id")); renderCards(shelfMatches); return true; };
+            View.OnClickListener click = v -> { if(book==null||!bookVisible(book))return;if (selectionMode) { if (!selectedBooks.remove(book.optString("id"))) selectedBooks.add(book.optString("id")); renderCards(shelfMatches); } else openBook(book, -1); };
+            View.OnLongClickListener hold = v -> { if(book==null||!bookVisible(book))return true;selectionMode = true; toolsExpanded = true; updateShelfTools(); selectedBooks.add(book.optString("id")); renderCards(shelfMatches); return true; };
             setOnClickListener(click); cover.setOnClickListener(click); info.setOnClickListener(click); setOnLongClickListener(hold); cover.setOnLongClickListener(hold); info.setOnLongClickListener(hold);
         }
         void bind(JSONObject b) {
+            if(job!=null)job.cancel(false);
+            if(!bookVisible(b)){book=null;setVisibility(View.INVISIBLE);title.setText("");generated.setText("");progressText.setText("");image.setImageDrawable(null);cover.setContentDescription(null);more.setContentDescription(null);return;}
+            setVisibility(View.VISIBLE);
             book = b; String id = b.optString("id"), name = b.optString("title"); title.setText(name); generated.setText(name); image.setImageDrawable(null); cover.setContentDescription(name + "封面");
             cover.setBackground(shape(BookIdentity.coverColor(b.optString("contentHash", id)), 7));
             progressText.setText(b.optLong("lastRead") > 0 ? getString(R.string.book_progress, percent(b)) : "未读"); more.setContentDescription("管理" + name);
             boolean selected = selectionMode && selectedBooks.contains(id); setSelected(selected); setBackground(selected ? shape(blend(shelfBg(), uiAccent(), .18f), 8) : null); cover.setForeground(coverOutline(selected));
             check.setVisibility(selectionMode ? View.VISIBLE : View.GONE); check.setText(selected ? "✓" : ""); check.setBackground(shape(selected ? uiAccent() : 0x995b6257, 10));
-            if (job != null) job.cancel(false); File file = lib.coverFile(b); if (!file.isFile()) return;
+            File file = lib.coverFile(b); if (!file.isFile()) return;
             String key = id + ":" + file.lastModified(); Bitmap cached = coverCache.get(key); if (cached != null) { image.setImageBitmap(cached); return; }
             job = coverIo.submit(() -> { BitmapFactory.Options options = new BitmapFactory.Options(); options.inJustDecodeBounds = true; BitmapFactory.decodeFile(file.getPath(), options); options.inSampleSize = 1; while (Math.max(options.outWidth, options.outHeight) / options.inSampleSize > 480) options.inSampleSize *= 2; options.inJustDecodeBounds = false;
-                Bitmap bitmap = BitmapFactory.decodeFile(file.getPath(), options); if (bitmap != null) { coverCache.put(key, bitmap); handler.post(() -> { if (book == b) image.setImageBitmap(bitmap); }); } });
+                Bitmap bitmap = BitmapFactory.decodeFile(file.getPath(), options); if (bitmap != null) { coverCache.put(key, bitmap); handler.post(() -> { if (book == b && bookVisible(b)) image.setImageBitmap(bitmap); }); } });
         }
     }
     private Dialog sheet(String title, LinearLayout body) {

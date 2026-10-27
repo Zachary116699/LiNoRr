@@ -99,6 +99,9 @@ public class GestureChecks extends Instrumentation {
         try {
             check("LNReader_QA".equals(arguments.getString("guard")), "Dedicated QA guard required");
             NativeActivity activity = (NativeActivity) startActivitySync(new Intent(getTargetContext(), NativeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            long readyDeadline=android.os.SystemClock.elapsedRealtime()+30000;boolean[] ready={false};
+            do{runOnMainSync(()->ready[0]=get(activity,"lib")!=null&&get(activity,"bookGrid")!=null);if(!ready[0])Thread.sleep(20);}while(!ready[0]&&android.os.SystemClock.elapsedRealtime()<readyDeadline);
+            check(ready[0],"Library did not initialize before gesture checks");
             if (arguments.containsKey("privacy")) { Thread.sleep(400); PrivacyChecks.run(this, activity); result.putString("stream", "PASS: privacy visibility, title gestures, private import, metadata, palette and background return\n"); finish(Activity.RESULT_OK, result); return; }
             if (arguments.containsKey("gallery")) { Thread.sleep(400); MediaChecks.run(this, activity, arguments.getString("gallery")); result.putString("stream", "partial".equals(arguments.getString("gallery")) ? "PASS: native album browsing, partial photo grants, thumbnails and cover selection\n" : "PASS: native album browsing, current photo grants, compact book actions, compressed cover backup and deletion\n"); finish(Activity.RESULT_OK, result); return; }
             if (arguments.containsKey("interaction")) { Thread.sleep(400); InteractionChecks.run(this, activity); result.putString("stream", "PASS: batch shelf removal, recent hiding and re-entry, import quick categories, inline rename and cancellation\n"); finish(Activity.RESULT_OK, result); return; }

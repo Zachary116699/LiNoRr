@@ -26,7 +26,7 @@ const run=extra=>execFileSync(bin,['-s',serial,'shell','am','instrument','-w',..
 let report='';
 if(recovery){for(const phase of ['copying','partial','published','retired','committed','cleanupfailure','unavailable']){const prepared=run(['-e','migrationPrepare',phase]);assert.ok(prepared.includes('PASS:')&&!prepared.includes('FAIL:'),prepared);report+=prepared;adb('shell','am','force-stop','com.lnreader.app');const recovered=run(['-e','migrationRecover','true']);assert.ok(recovered.includes('PASS:')&&!recovered.includes('FAIL:'),recovered);report+=recovered;}}else report=run([]);
 mkdirSync('artifacts', { recursive: true });
-writeFileSync('artifacts/android-0.9.21-' + (scale ? 'scale' : gesture ? 'gestures' : recovery?'recovery':gallery?'gallery':'storage') + '.log', report);
+writeFileSync('artifacts/android-0.9.22-' + (scale ? 'scale' : gesture ? 'gestures' : recovery?'recovery':gallery?'gallery':'storage') + '.log', report);
 console.log(report.trim());
 assert.ok(!/FAIL:|AssertionError|Process crashed/.test(report), report);
 assert.match(report, /PASS:/, report);
